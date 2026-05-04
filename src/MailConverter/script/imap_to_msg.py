@@ -1,0 +1,250 @@
+# -*- coding: utf-8 -*-
+import os
+import sys
+import io
+import win32com.client
+import pythoncom
+import gc
+import imaplib
+import email as email_module
+import time
+import re
+import threading
+from email.header import decode_header
+from email.utils import parseaddr, getaddresses
+
+# 1. 环境编码与控制台支持
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
+if os.name == 'nt':
+    os.system('chcp 65001 > nul')
+
+# 全局变量用于线程间通信
+result_lock = threading.Lock()
+processed_count = 0
+
+def get_imap_config(email, password):
+    domain = email.split('@')[1].lower()
+    configs = {
+        'gmail.com': ('imap.gmail.com', 993),
+        'outlook.com': ('outlook.office365.com', 993),
+        'qq.com': ('imap.qq.com', 993),
+        '163.com': ('imap.163.com', 993),
+        '126.com': ('imap.126.com', 993),
+    }
+    return configs.get(domain, (f'imap.{domain}', 993))
+
+def get_clean_header(header_raw):
+    """彻底解决邮件头乱码和 b'...' 问题"""
+    if not header_raw: return ""
+    if isinstance(header_raw, bytes):
+        header_raw = header_raw.decode('utf-8', errors='replace')
+    try:
+        parts = decode_header(header_raw)
+        res = ""
+        for part, enc in parts:
+            if isinstance(part, bytes):
+                for codec in [enc or 'utf-8', 'utf-8', 'gb18030', 'gbk', 'latin1']:
+                    try:
+                        res += part.decode(codec)
+                        break
+                    except: continue
+            else: res += str(part)
+        return res.strip()
+    except: return str(header_raw)
+
+def safe_str_uid(uid):
+    """强制将 IMAP UID 转换为纯数字字符串，去除 b' ' 干扰"""
+    if isinstance(uid, bytes):
+        return uid.decode('utf-8').strip("'")
+    return str(uid).strip("'")
+
+def process_single_email(client, outlook, uid, folder_path):
+    """处理单个邮件，返回是否成功"""
+    global processed_count
+    try:
+        _, data = client.uid('fetch', uid, '(RFC822)')
+        if not data or not data[0]:
+            return False
+
+        raw_msg = email_module.message_from_bytes(data[0][1])
+
+        subject = get_clean_header(raw_msg.get('subject', ''))
+        from_info = get_clean_header(raw_msg.get('from', ''))
+        to_info = get_clean_header(raw_msg.get('to', ''))
+
+        # 获取收件箱并创建邮件
+        namespace = outlook.GetNamespace("MAPI")
+        inbox_folder = namespace.GetDefaultFolder(6)
+        mail_item = inbox_folder.Items.Add()
+        mail_item.Subject = subject
+
+        # 写入发件人属性
+        prop_accessor = mail_item.PropertyAccessor
+        tag_prefix = "http://schemas.microsoft.com/mapi/proptag/"
+        try:
+            display_name, sender_addr = parseaddr(from_info)
+            prop_accessor.SetProperty(f"{tag_prefix}0x0C1F001F", sender_addr)
+            prop_accessor.SetProperty(f"{tag_prefix}0x0C1A001F", display_name or sender_addr)
+            prop_accessor.SetProperty(f"{tag_prefix}0x0E070003", 1)
+        except: pass
+
+        # 处理正文和附件
+        html_content = ""
+        text_content = ""
+
+        for part in raw_msg.walk():
+            content_type = part.get_content_type()
+            filename = part.get_filename()
+
+            if filename:
+                fname = get_clean_header(filename)
+                safe_fname = re.sub(r'[\\/:*?"<>|]', '_', fname)
+                temp_att_path = os.path.abspath(os.path.join(os.environ['TEMP'], f"tmp_{uid}_{safe_fname}"))
+
+                payload = part.get_payload(decode=True)
+                if payload:
+                    with open(temp_att_path, 'wb') as f: f.write(payload)
+                    mail_item.Attachments.Add(temp_att_path)
+                    mail_item.Save()
+                    os.remove(temp_att_path)
+
+            elif content_type == 'text/html':
+                payload = part.get_payload(decode=True)
+                html_content = payload.decode(part.get_content_charset() or 'utf-8', errors='replace')
+            elif content_type == 'text/plain':
+                payload = part.get_payload(decode=True)
+                text_content = payload.decode(part.get_content_charset() or 'utf-8', errors='replace')
+
+        if html_content:
+            mail_item.HTMLBody = html_content
+        elif text_content:
+            mail_item.Body = text_content
+
+        mail_item.Save()
+
+        # 文件命名
+        clean_subject = re.sub(r'[\\/:*?"<>|]', '_', subject).strip()[:80] or "NoSubject"
+        final_filename = f"{clean_subject}.msg"
+        final_path = os.path.join(folder_path, final_filename)
+
+        # 处理同名文件
+        counter = 1
+        while os.path.exists(final_path):
+            final_path = os.path.join(folder_path, f"{clean_subject} ({counter}).msg")
+            counter += 1
+
+        mail_item.SaveAs(os.path.abspath(final_path), 9)
+        mail_item.Delete()
+
+        with result_lock:
+            processed_count += 1
+            print(f"  [{processed_count}] 成功保存: {os.path.basename(final_path)}")
+
+        return True
+
+    except Exception as e:
+        print(f"  UID {uid} 出错: {e}")
+        return False
+
+def process_email_batch(emails_data, email_addr, password, output_dir, thread_id):
+    """线程处理一批邮件"""
+    try:
+        # 每个线程创建独立的IMAP连接
+        host, port = get_imap_config(email_addr, password)
+        client = imaplib.IMAP4_SSL(host, port)
+        client.login(email_addr, password)
+
+        # 每个线程创建独立的Outlook实例
+        outlook = win32com.client.Dispatch("Outlook.Application")
+
+        for uid, folder_path in emails_data:
+            process_single_email(client, outlook, uid, folder_path)
+
+        client.logout()
+    except Exception as e:
+        print(f"线程 {thread_id} 出错: {e}")
+
+def imap_to_msg_final(email_addr, password, output_dir, max_emails=99999, folder_filter=None, num_threads=4):
+    print(f"正在启动任务: {email_addr} (线程数: {num_threads})")
+    pythoncom.CoInitialize()
+    global processed_count
+    processed_count = 0
+
+    try:
+        host, port = get_imap_config(email_addr, password)
+        client = imaplib.IMAP4_SSL(host, port)
+        client.login(email_addr, password)
+
+        _, folders = client.list()
+        active_folders = []
+        for f_data in folders:
+            f_raw = f_data.decode()
+            match = re.search(r'\((.*?)\)\s+"(.*?)"\s+(.*)', f_raw)
+            f_name = match.group(3).strip('"') if match else f_raw.split('"')[-2]
+            if folder_filter and f_name not in folder_filter: continue
+
+            res, _ = client.select(f'"{f_name}"', readonly=True)
+            if res == 'OK':
+                _, msg_data = client.uid('search', None, 'ALL')
+                if msg_data[0]:
+                    active_folders.append((f_name, len(msg_data[0].split())))
+
+        # 收集所有邮件UID和目标文件夹
+        all_emails = []
+        for f_name, _ in active_folders:
+            if processed_count >= max_emails: break
+            client.select(f'"{f_name}"', readonly=True)
+            _, msg_data = client.uid('search', None, 'ALL')
+            uids = msg_data[0].split()
+
+            safe_folder_name = re.sub(r'[\\/:*?"<>|]', '_', f_name)
+            folder_path = os.path.join(output_dir, safe_folder_name)
+            if not os.path.exists(folder_path): os.makedirs(folder_path)
+
+            for uid_raw in reversed(uids):
+                if processed_count >= max_emails: break
+                uid = safe_str_uid(uid_raw)
+                all_emails.append((uid, folder_path))
+
+        client.logout()
+        print(f"共找到 {len(all_emails)} 封邮件，即将启动 {num_threads} 个线程并行处理...")
+
+        # 将邮件分配给各个线程
+        batch_size = max(1, len(all_emails) // num_threads)
+        batches = []
+        for i in range(num_threads):
+            start_idx = i * batch_size
+            if i == num_threads - 1:
+                batch = all_emails[start_idx:]
+            else:
+                batch = all_emails[start_idx:start_idx + batch_size]
+            if batch:
+                batches.append(batch)
+
+        # 启动多线程处理
+        threads = []
+        for i, batch in enumerate(batches):
+            if batch:
+                t = threading.Thread(target=process_email_batch,
+                                   args=(batch, email_addr, password, output_dir, i+1))
+                threads.append(t)
+                t.start()
+                time.sleep(0.5) # 避免同时启动
+
+        # 等待所有线程完成
+        for t in threads:
+            t.join()
+
+        print(f"\n任务完成！共导出 {processed_count} 封邮件。")
+
+    finally:
+        pythoncom.CoUninitialize()
+
+if __name__ == "__main__":
+    if len(sys.argv) < 4:
+        print("Usage: python script.py <Email> <Password> <OutputDir> [MaxEmails] [Threads] [Folder1,Folder2,...]")
+    else:
+        limit = int(sys.argv[4]) if len(sys.argv) > 4 else 100000
+        threads = int(sys.argv[5]) if len(sys.argv) > 5 else 4
+        f_filter = [f.strip() for f in sys.argv[6].split(',')] if len(sys.argv) > 6 else None
+        imap_to_msg_final(sys.argv[1], sys.argv[2], sys.argv[3], limit, f_filter, threads)

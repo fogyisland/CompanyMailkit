@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FoxmailToPst.App/FoxmailToPst.App.csproj" />
+    <Project Path="src/FoxmailToPst.Core/FoxmailToPst.Core.csproj" />
+  </Folder>
+</Solution>
