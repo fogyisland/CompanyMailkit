@@ -301,7 +301,7 @@ namespace MailConverter
             var macAddress = regService.GetPhysicalMacAddress();
 
             // 检查云端注册状态
-            var checkResult = await regService.CheckRegistrationStatusAsync("小铭邮件百宝箱", registrySettings.RegisteredUserEmail);
+            var checkResult = await regService.CheckRegistrationStatusAsync("xiaomingMailtoolkitCompany", registrySettings.RegisteredUserEmail);
 
             if (checkResult.Success)
             {
@@ -330,7 +330,7 @@ namespace MailConverter
 
                 // 自动注册
                 var registerResult = await regService.RegisterAsync(
-                    "小铭邮件百宝箱",
+                    "xiaomingMailtoolkitCompany",
                     "1.1.3",
                     registrySettings.RegisteredUserName ?? "",
                     registrySettings.RegisteredUserEmail,

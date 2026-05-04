@@ -22,7 +22,7 @@ namespace MailConverter
         private Button btnUnregister;
 
         private readonly RegistrationService _registrationService;
-        private readonly string _softwareName = "小铭邮件百宝箱";
+        private readonly string _softwareName = "xiaomingMailtoolkitCompany";
         private readonly string _softwareVersion = "1.0.0";
         private string _macAddress;
         private bool _isRegistered;
