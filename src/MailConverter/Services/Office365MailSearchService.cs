@@ -322,15 +322,15 @@ namespace MailConverter
                 {
                     var mailId = mailIds[i];
 
-                    // 软删除 - 移动到已删除邮件
-                    var url = $"https://graph.microsoft.com/v1.0/users/{_email}/messages/{mailId}";
+                    // 硬删除 - 永久删除，不经过回收站
+                    var url = $"https://graph.microsoft.com/v1.0/users/{_email}/messages/{mailId}/permanentDelete";
 
-                    var response = await _httpClient.DeleteAsync(url);
+                    var response = await _httpClient.PostAsync(url, null);
 
                     if (response.IsSuccessStatusCode)
                     {
                         deleted++;
-                        Log.Debug("已删除邮件: {MailId}", mailId);
+                        Log.Debug("已永久删除邮件: {MailId}", mailId);
                     }
                     else
                     {
