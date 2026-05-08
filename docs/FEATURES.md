@@ -36,6 +36,8 @@
 | Graph API 导入 | 使用 Microsoft Graph SDK 5.57.0 导入邮件到 Office 365 |
 | Azure 存储 | 支持 Azure Blob Storage 操作 |
 | OAuth 认证 | 支持 OAuth 2.0 认证流程 |
+| **邮件搜索导出** | 使用 Graph API `$search` 搜索邮件，导出到 PST 文件 |
+| **邮件搜索删除** | 搜索邮件并硬删除（permanentDelete），不经过回收站 |
 
 ### 2.4 日历和联系人
 
@@ -44,6 +46,39 @@
 | 日历导出 CSV/ICS | 从 EWS 获取日历信息并导出 |
 | 联系人导出 | 支持 vCard/CardDAV 格式 |
 | C# Outlook Interop | 日历/联系人通过 C# Outlook Interop 写入 PST |
+
+### 2.5 Exchange Online 百宝箱 - 邮件搜索导出
+
+**位置**: Exchange Online 百宝箱 → 邮件搜索导出
+
+**功能说明**:
+
+| 功能 | 说明 |
+|------|------|
+| 关键字搜索 | 使用 `$search="subject:关键字"` 搜索邮件主题 |
+| 附件名搜索 | 使用 `$search="attachment:文件名"` 搜索附件名 |
+| 日期范围 | 支持按收件日期范围筛选 |
+| 导出 PST | 将搜索结果导出为 PST 文件 |
+| 导出并删除 | 导出 PST 后硬删除源邮件（permanentDelete） |
+
+**技术实现**:
+
+1. **搜索**: Graph API `$search` 参数，支持分页
+   ```
+   GET https://graph.microsoft.com/v1.0/users/{email}/messages?$search="subject:关键字"
+   ```
+
+2. **导出流程**:
+   - Graph API `$value` 获取邮件原始 EML 内容
+   - 保存到临时目录
+   - 调用 `create_pst.py` 合并到 PST 文件
+
+3. **删除**: Graph API `permanentDelete` 硬删除
+   ```
+   POST https://graph.microsoft.com/v1.0/users/{email}/messages/{id}/permanentDelete
+   ```
+
+**权限要求**: `Mail.ReadWrite`
 
 ---
 
@@ -204,6 +239,7 @@
 
 | 版本 | 日期 | 主要变更 |
 |------|------|----------|
+| v1.1.8 | 2026-05-08 | 新增 Exchange Online 邮件搜索导出删除功能（Graph API） |
 | v1.1.7 | 2026-04-06 | 修复 Exchange EWS URL 自动添加、EWS 投递增强 |
 | v1.1.6 | 2026-04-05 | EWS 投递到 IMAP 功能、MailKit 升级到 4.7.0 |
 | v1.1.5 | 2026-04-04 | 现代化侧边栏、Bootstrap Icons、DPI 自适应 |
