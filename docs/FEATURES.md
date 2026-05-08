@@ -3,7 +3,7 @@
 ## 一、项目概述
 
 - **项目名称**: 小铭邮件百宝箱 (xiaomingMailtoolkitCompany)
-- **版本**: v1.1.7
+- **版本**: v1.2.0
 - **技术栈**: .NET Framework 4.8, WinForms, MimeKit, MailKit, EWS Managed API, Microsoft Graph SDK
 - **用途**: 多功能邮件转换工具，支持 EML/OST/IMAP 转 PST、Exchange 服务器集成、Office 365 导入
 
@@ -239,7 +239,7 @@
 
 | 版本 | 日期 | 主要变更 |
 |------|------|----------|
-| v1.1.8 | 2026-05-08 | 新增 Exchange Online 邮件搜索导出删除功能（Graph API） |
+| v1.2.0 | 2026-05-08 | 新增 Exchange Online 邮件搜索导出删除功能（Graph API） |
 | v1.1.7 | 2026-04-06 | 修复 Exchange EWS URL 自动添加、EWS 投递增强 |
 | v1.1.6 | 2026-04-05 | EWS 投递到 IMAP 功能、MailKit 升级到 4.7.0 |
 | v1.1.5 | 2026-04-04 | 现代化侧边栏、Bootstrap Icons、DPI 自适应 |

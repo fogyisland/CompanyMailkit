@@ -6,7 +6,7 @@
     <UseWindowsForms>true</UseWindowsForms>
     <AssemblyName>MailConverter</AssemblyName>
     <RootNamespace>MailConverter</RootNamespace>
-    <Version>1.1.0</Version>
+    <Version>1.2.0</Version>
     <Company>MailConverter</Company>
     <Product>小铭邮件百宝箱</Product>
     <Description>多功能邮件转换工具</Description>

@@ -16629,7 +16629,7 @@ namespace MailConverter
                 _logTextBox.Clear();
                 _logTextBox.AppendText($"[========== PST导出开始 ==========]\n");
                 _logTextBox.AppendText($"[INFO] 开始时间: {DateTime.Now:yyyy-MM-dd HH:mm:ss}\n");
-                _logTextBox.AppendText($"[INFO] 程序版本: 小铭邮件百宝箱 v1.1.5\n");
+                _logTextBox.AppendText($"[INFO] 程序版本: 小铭邮件百宝箱 v1.2.0\n");
                 _logTextBox.AppendText($"[----------------------------------------]\n");
 
                 Task.Run(() =>
