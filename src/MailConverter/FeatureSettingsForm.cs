@@ -16,7 +16,7 @@ namespace MailConverter
         private CheckBox _chkBatchSyncCsvContacts, _chkBatchSyncVcfContacts, _chkBatchSyncCsvCalendar, _chkBatchSyncPurview;
         private CheckBox _chkO365ToolkitLogin, _chkO365ToolkitAccount, _chkO365ToolkitGroup;
         private CheckBox _chkO365ToolkitMobile, _chkO365ToolkitTraffic, _chkO365ToolkitMigration;
-        private CheckBox _chkO365ToolkitWhois, _chkO365ToolkitDns;
+        private CheckBox _chkO365ToolkitWhois, _chkO365ToolkitDns, _chkO365ToolkitMailSearch;
         private Button _btnOk, _btnSelectAll, _btnDeselectAll;
         private Panel _contentPanel;
         private Label _lblFontSettings;
@@ -153,7 +153,8 @@ namespace MailConverter
                 (_chkO365ToolkitTraffic = CreateCheckBox("  邮件流量搜索", 20, y += 25), "O365Toolkit_Traffic"),
                 (_chkO365ToolkitMigration = CreateCheckBox("  邮件迁移", 20, y += 25), "O365Toolkit_Migration"),
                 (_chkO365ToolkitWhois = CreateCheckBox("  WHOIS查询", 20, y += 25), "O365Toolkit_Whois"),
-                (_chkO365ToolkitDns = CreateCheckBox("  DNS查询", 20, y += 25), "O365Toolkit_Dns")
+                (_chkO365ToolkitDns = CreateCheckBox("  DNS查询", 20, y += 25), "O365Toolkit_Dns"),
+                (_chkO365ToolkitMailSearch = CreateCheckBox("  邮件搜索导出", 20, y += 25), "O365Toolkit_MailSearch")
             });
             y += 10;
 
@@ -314,6 +315,7 @@ namespace MailConverter
             _settings.Feature_O365Toolkit_Migration = _chkO365ToolkitMigration.Checked;
             _settings.Feature_O365Toolkit_Whois = _chkO365ToolkitWhois.Checked;
             _settings.Feature_O365Toolkit_Dns = _chkO365ToolkitDns.Checked;
+            _settings.Feature_O365Toolkit_MailSearch = _chkO365ToolkitMailSearch.Checked;
 
             _settings.Feature_OnPremiseToolkit = _chkOnPremiseToolkit.Checked;
 
@@ -400,6 +402,7 @@ namespace MailConverter
             if (chk == _chkO365ToolkitMigration) return "O365Toolkit_Migration";
             if (chk == _chkO365ToolkitWhois) return "O365Toolkit_Whois";
             if (chk == _chkO365ToolkitDns) return "O365Toolkit_Dns";
+            if (chk == _chkO365ToolkitMailSearch) return "O365Toolkit_MailSearch";
             return "";
         }
 
@@ -441,6 +444,7 @@ namespace MailConverter
             _chkO365ToolkitMigration.Checked = _settings.Feature_O365Toolkit_Migration;
             _chkO365ToolkitWhois.Checked = _settings.Feature_O365Toolkit_Whois;
             _chkO365ToolkitDns.Checked = _settings.Feature_O365Toolkit_Dns;
+            _chkO365ToolkitMailSearch.Checked = _settings.Feature_O365Toolkit_MailSearch;
 
             _chkOnPremiseToolkit.Checked = _settings.Feature_OnPremiseToolkit;
 
@@ -519,6 +523,7 @@ namespace MailConverter
             _chkO365ToolkitMigration.Checked = value;
             _chkO365ToolkitWhois.Checked = value;
             _chkO365ToolkitDns.Checked = value;
+            _chkO365ToolkitMailSearch.Checked = value;
 
             _chkOnPremiseToolkit.Checked = value;
         }

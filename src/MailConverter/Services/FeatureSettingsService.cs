@@ -89,6 +89,7 @@ namespace MailConverter
                         case "Feature_O365Toolkit_Migration": settings.Feature_O365Toolkit_Migration = enabled; break;
                         case "Feature_O365Toolkit_Whois": settings.Feature_O365Toolkit_Whois = enabled; break;
                         case "Feature_O365Toolkit_Dns": settings.Feature_O365Toolkit_Dns = enabled; break;
+                        case "Feature_O365Toolkit_MailSearch": settings.Feature_O365Toolkit_MailSearch = enabled; break;
                         case "Feature_OnPremiseToolkit": settings.Feature_OnPremiseToolkit = enabled; break;
                         case "Feature_Preferences": settings.Feature_Preferences = enabled; break;
                         case "LogFontName": settings.LogFontName = parts[1].Trim(); break;
@@ -158,6 +159,7 @@ namespace MailConverter
                 sb.AppendLine($"Feature_O365Toolkit_Migration={settings.Feature_O365Toolkit_Migration}");
                 sb.AppendLine($"Feature_O365Toolkit_Whois={settings.Feature_O365Toolkit_Whois}");
                 sb.AppendLine($"Feature_O365Toolkit_Dns={settings.Feature_O365Toolkit_Dns}");
+                sb.AppendLine($"Feature_O365Toolkit_MailSearch={settings.Feature_O365Toolkit_MailSearch}");
                 sb.AppendLine($"Feature_OnPremiseToolkit={settings.Feature_OnPremiseToolkit}");
                 sb.AppendLine($"Feature_Preferences={settings.Feature_Preferences}");
                 sb.AppendLine($"LogFontName={settings.LogFontName}");
@@ -226,6 +228,7 @@ namespace MailConverter
         public bool Feature_O365Toolkit_Migration { get; set; } = true;
         public bool Feature_O365Toolkit_Whois { get; set; } = true;
         public bool Feature_O365Toolkit_Dns { get; set; } = true;
+        public bool Feature_O365Toolkit_MailSearch { get; set; } = true;
 
         // 界面字体设置
         public string LogFontName { get; set; } = "Consolas";
@@ -275,6 +278,7 @@ namespace MailConverter
                 Feature_O365Toolkit_Migration = this.Feature_O365Toolkit_Migration,
                 Feature_O365Toolkit_Whois = this.Feature_O365Toolkit_Whois,
                 Feature_O365Toolkit_Dns = this.Feature_O365Toolkit_Dns,
+                Feature_O365Toolkit_MailSearch = this.Feature_O365Toolkit_MailSearch,
                 Feature_OnPremiseToolkit = this.Feature_OnPremiseToolkit,
                 Feature_Preferences = this.Feature_Preferences,
                 LogFontName = this.LogFontName,

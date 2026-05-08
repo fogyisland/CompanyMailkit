@@ -267,7 +267,7 @@ namespace MailConverter
         private TabPage _imapExtractTab, _extractEmailTab;
         private TabPage _emlImportTab, _syncTab;
         private TabPage _batchLoginTab, _pstImportTab, _pstContactsTab, _pstCalendarTab, _csvContactsTab, _vcfContactsTab, _csvCalendarTab, _purgeViewTab;
-        private TabPage _loginTab, _accountMgmtTab, _groupMgmtTab, _mobileDeviceTab, _mailTrafficTab, _migrationTab, _whoisTab, _dnsTab;
+        private TabPage _loginTab, _accountMgmtTab, _groupMgmtTab, _mobileDeviceTab, _mailTrafficTab, _migrationTab, _whoisTab, _dnsTab, _mailSearchDeleteTab;
 
         public MainForm()
         {
@@ -1515,6 +1515,13 @@ namespace MailConverter
             _dnsTab.Controls.Add(dnsPanel);
             _onlineToolkitNestedTabControl.TabPages.Add(_dnsTab);
 
+            // 邮件搜索导出删除子Tab
+            _mailSearchDeleteTab = new TabPage("邮件搜索导出");
+            var mailSearchPanel = CreateMailSearchDeletePanel();
+            mailSearchPanel.Dock = DockStyle.Fill;
+            _mailSearchDeleteTab.Controls.Add(mailSearchPanel);
+            _onlineToolkitNestedTabControl.TabPages.Add(_mailSearchDeleteTab);
+
             // 设置子Tab可见性
             if (!_featureSettings.Feature_O365Toolkit_Login) _loginTab.SetVisible(false);
             if (!_featureSettings.Feature_O365Toolkit_Account) _accountMgmtTab.SetVisible(false);
@@ -1524,6 +1531,7 @@ namespace MailConverter
             if (!_featureSettings.Feature_O365Toolkit_Migration) _migrationTab.SetVisible(false);
             if (!_featureSettings.Feature_O365Toolkit_Whois) _whoisTab.SetVisible(false);
             if (!_featureSettings.Feature_O365Toolkit_Dns) _dnsTab.SetVisible(false);
+            if (!_featureSettings.Feature_O365Toolkit_MailSearch) _mailSearchDeleteTab.SetVisible(false);
 
             // 为Exchange Online 百宝箱的嵌套TabControl添加切换事件（切换日志）
             _onlineToolkitNestedTabControl.SelectedIndexChanged += OnlineToolkitNestedTabControl_SelectedIndexChanged;
@@ -12740,6 +12748,391 @@ namespace MailConverter
             panel.Controls.Add(btnDnsQuery);
             panel.Controls.Add(lblDnsResult);
             panel.Controls.Add(dgvDnsResult);
+
+            return panel;
+        }
+
+        private Panel CreateMailSearchDeletePanel()
+        {
+            var panel = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+
+            var lblTitle = new Label
+            {
+                Text = "邮件搜索导出删除",
+                Location = new Point(20, 20),
+                AutoSize = true,
+                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold)
+            };
+
+            var lblNote = new Label
+            {
+                Text = "使用 Graph API 搜索邮件，支持关键字和附件名搜索，导出后可选删除云端邮件",
+                Location = new Point(20, 50),
+                AutoSize = true,
+                ForeColor = Color.Gray
+            };
+
+            // 搜索条件区域
+            var lblKeyword = new Label { Text = "关键字:", Location = new Point(20, 85), AutoSize = true };
+            var txtKeyword = new TextBox { Location = new Point(80, 82), Size = new Size(200, 25), Name = "txtMailSearchKeyword" };
+
+            var lblAttachment = new Label { Text = "附件名:", Location = new Point(295, 85), AutoSize = true };
+            var txtAttachment = new TextBox { Location = new Point(355, 82), Size = new Size(200, 25), Name = "txtMailSearchAttachment" };
+
+            var lblStartDate = new Label { Text = "开始日期:", Location = new Point(570, 85), AutoSize = true };
+            var dtpStartDate = new DateTimePicker { Location = new Point(635, 82), Size = new Size(120, 25), Name = "dtpMailSearchStart" };
+
+            var lblEndDate = new Label { Text = "结束日期:", Location = new Point(20, 115), AutoSize = true };
+            var dtpEndDate = new DateTimePicker { Location = new Point(85, 112), Size = new Size(120, 25), Name = "dtpMailSearchEnd" };
+
+            var lblMaxResults = new Label { Text = "最大结果数:", Location = new Point(220, 115), AutoSize = true };
+            var numMaxResults = new NumericUpDown { Location = new Point(310, 112), Size = new Size(70, 25), Minimum = 10, Maximum = 1000, Value = 100, Name = "numMailSearchMax" };
+
+            // 搜索按钮
+            var btnSearch = new Button
+            {
+                Text = "搜索",
+                Location = new Point(395, 110),
+                Size = new Size(80, 27),
+                BackColor = Color.FromArgb(0, 120, 215),
+                ForeColor = Color.White,
+                Name = "btnMailSearch"
+            };
+
+            // 导出PST按钮
+            var btnExportPst = new Button
+            {
+                Text = "导出PST",
+                Location = new Point(485, 110),
+                Size = new Size(90, 27),
+                BackColor = Color.FromArgb(40, 167, 69),
+                ForeColor = Color.White,
+                Name = "btnMailExportPst",
+                Enabled = false
+            };
+
+            // 导出并删除按钮
+            var btnExportDelete = new Button
+            {
+                Text = "导出并删除",
+                Location = new Point(585, 110),
+                Size = new Size(100, 27),
+                BackColor = Color.FromArgb(220, 53, 69),
+                ForeColor = Color.White,
+                Name = "btnMailExportDelete",
+                Enabled = false
+            };
+
+            // 结果列表
+            var lblResults = new Label { Text = "搜索结果:", Location = new Point(20, 150), AutoSize = true };
+            var dgvResults = new DataGridView
+            {
+                Location = new Point(20, 175),
+                Size = new Size(720, 350),
+                Name = "dgvMailSearchResults",
+                ReadOnly = false,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+                ColumnHeadersHeightSizeMode = DataGridViewColumnHeadersHeightSizeMode.AutoSize,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = true,
+                Font = new Font("Microsoft Sans Serif", 9)
+            };
+            dgvResults.Columns.Add("Select", "选择");
+            dgvResults.Columns.Add("Id", "ID");
+            dgvResults.Columns.Add("Subject", "主题");
+            dgvResults.Columns.Add("From", "发件人");
+            dgvResults.Columns.Add("Date", "日期");
+            dgvResults.Columns.Add("HasAttach", "附件");
+            dgvResults.Columns["Id"].Visible = false;
+
+            // 全选/取消全选
+            var lblSelected = new Label { Text = "已选择: 0 封", Location = new Point(20, 530), AutoSize = true };
+            var btnSelectAll = new Button { Text = "全选", Location = new Point(120, 527), Size = new Size(70, 25) };
+            var btnDeselectAll = new Button { Text = "取消全选", Location = new Point(195, 527), Size = new Size(70, 25) };
+
+            // 进度条
+            var progressBar = new ProgressBar
+            {
+                Location = new Point(20, 560),
+                Size = new Size(500, 20),
+                Style = ProgressBarStyle.Continuous,
+                Name = "progressMailSearch"
+            };
+
+            // 状态标签
+            var lblStatus = new Label
+            {
+                Text = "就绪",
+                Location = new Point(20, 585),
+                Size = new Size(710, 20),
+                ForeColor = Color.Gray
+            };
+
+            // 当前搜索结果
+            List<MailSearchResult> _currentSearchResults = new List<MailSearchResult>();
+
+            // 搜索按钮事件
+            btnSearch.Click += (s, e) =>
+            {
+                if (!_isExchangeOnlineLoggedIn || _exchangeOnlineService == null)
+                {
+                    lblStatus.Text = "请先在'登录'页签登录Exchange Online";
+                    lblStatus.ForeColor = Color.Red;
+                    return;
+                }
+
+                var keyword = txtKeyword.Text.Trim();
+                var attachment = txtAttachment.Text.Trim();
+                var startDate = dtpStartDate.Checked ? dtpStartDate.Value : (DateTime?)null;
+                var endDate = dtpEndDate.Checked ? dtpEndDate.Value : (DateTime?)null;
+                var maxResults = (int)numMaxResults.Value;
+
+                if (string.IsNullOrEmpty(keyword) && string.IsNullOrEmpty(attachment))
+                {
+                    MessageBox.Show("请输入关键字或附件名", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                dgvResults.Rows.Clear();
+                _currentSearchResults.Clear();
+                lblStatus.Text = "正在搜索...";
+                lblStatus.ForeColor = Color.Blue;
+                progressBar.Value = 0;
+
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        var searchService = new Office365MailSearchService(
+                            _exchangeOnlineService.GraphAccessToken,
+                            _exchangeOnlineService.Email);
+
+                        var results = await searchService.SearchEmailsAsync(keyword, attachment, startDate, endDate, maxResults);
+
+                        this.Invoke(new Action(() =>
+                        {
+                            _currentSearchResults = results;
+                            foreach (var r in results)
+                            {
+                                int idx = dgvResults.Rows.Add(r.IsSelected ? "√" : "", r.Id, r.Subject, r.From, r.ReceivedDateTime.ToString("yyyy-MM-dd HH:mm"), r.HasAttachments ? "√" : "");
+                            }
+                            lblSelected.Text = $"已选择: {results.Count} 封";
+                            lblStatus.Text = $"搜索完成，找到 {results.Count} 封邮件";
+                            lblStatus.ForeColor = Color.Green;
+                            btnExportPst.Enabled = results.Count > 0;
+                            btnExportDelete.Enabled = results.Count > 0;
+                            progressBar.Value = 100;
+                        }));
+                    }
+                    catch (Exception ex)
+                    {
+                        this.Invoke(new Action(() =>
+                        {
+                            lblStatus.Text = "搜索失败: " + ex.Message;
+                            lblStatus.ForeColor = Color.Red;
+                        }));
+                        Serilog.Log.Error(ex, "邮件搜索失败");
+                    }
+                });
+            };
+
+            // 全选按钮
+            btnSelectAll.Click += (s, e) =>
+            {
+                foreach (DataGridViewRow row in dgvResults.Rows)
+                {
+                    row.Cells["Select"].Value = "√";
+                }
+                foreach (var r in _currentSearchResults) r.IsSelected = true;
+                lblSelected.Text = $"已选择: {_currentSearchResults.Count} 封";
+            };
+
+            // 取消全选按钮
+            btnDeselectAll.Click += (s, e) =>
+            {
+                foreach (DataGridViewRow row in dgvResults.Rows)
+                {
+                    row.Cells["Select"].Value = "";
+                }
+                foreach (var r in _currentSearchResults) r.IsSelected = false;
+                lblSelected.Text = "已选择: 0 封";
+            };
+
+            // 结果选择变化时更新
+            dgvResults.CellValueChanged += (s, e) =>
+            {
+                if (e.ColumnIndex == 0 && e.RowIndex >= 0)
+                {
+                    var row = dgvResults.Rows[e.RowIndex];
+                    var isSelected = row.Cells["Select"].Value?.ToString() == "√";
+                    if (e.RowIndex < _currentSearchResults.Count)
+                    {
+                        _currentSearchResults[e.RowIndex].IsSelected = isSelected;
+                    }
+                    var selectedCount = _currentSearchResults.Count(r => r.IsSelected);
+                    lblSelected.Text = $"已选择: {selectedCount} 封";
+                }
+            };
+
+            // 导出PST按钮
+            btnExportPst.Click += (s, e) =>
+            {
+                var selectedEmails = _currentSearchResults.Where(r => r.IsSelected).ToList();
+                if (selectedEmails.Count == 0)
+                {
+                    MessageBox.Show("请先选择要导出的邮件", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                var dialog = new SaveFileDialog
+                {
+                    Filter = "PST文件|*.pst",
+                    FileName = $"SearchExport_{DateTime.Now:yyyyMMddHHmmss}.pst"
+                };
+
+                if (dialog.ShowDialog() != DialogResult.OK)
+                    return;
+
+                lblStatus.Text = "正在导出...";
+                lblStatus.ForeColor = Color.Blue;
+                progressBar.Value = 0;
+
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        var searchService = new Office365MailSearchService(
+                            _exchangeOnlineService.GraphAccessToken,
+                            _exchangeOnlineService.Email);
+
+                        var progress = new Progress<int>(p =>
+                        {
+                            this.Invoke(new Action(() => progressBar.Value = p));
+                        });
+
+                        var result = await searchService.ExportToPstAsync(selectedEmails, dialog.FileName, progress);
+
+                        this.Invoke(new Action(() =>
+                        {
+                            if (!string.IsNullOrEmpty(result))
+                            {
+                                lblStatus.Text = $"导出完成: {result}";
+                                lblStatus.ForeColor = Color.Green;
+                                MessageBox.Show($"已导出 {selectedEmails.Count} 封邮件到 PST 文件", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            }
+                            else
+                            {
+                                lblStatus.Text = "导出失败";
+                                lblStatus.ForeColor = Color.Red;
+                            }
+                        }));
+                    }
+                    catch (Exception ex)
+                    {
+                        this.Invoke(new Action(() =>
+                        {
+                            lblStatus.Text = "导出失败: " + ex.Message;
+                            lblStatus.ForeColor = Color.Red;
+                        }));
+                        Serilog.Log.Error(ex, "导出PST失败");
+                    }
+                });
+            };
+
+            // 导出并删除按钮
+            btnExportDelete.Click += (s, e) =>
+            {
+                var selectedEmails = _currentSearchResults.Where(r => r.IsSelected).ToList();
+                if (selectedEmails.Count == 0)
+                {
+                    MessageBox.Show("请先选择要导出并删除的邮件", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return;
+                }
+
+                var confirm = MessageBox.Show(
+                    $"确定要导出并删除选中的 {selectedEmails.Count} 封邮件吗？\n邮件将被移动到已删除邮件文件夹。",
+                    "确认删除",
+                    MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning);
+
+                if (confirm != DialogResult.Yes)
+                    return;
+
+                var dialog = new SaveFileDialog
+                {
+                    Filter = "PST文件|*.pst",
+                    FileName = $"SearchExport_{DateTime.Now:yyyyMMddHHmmss}.pst"
+                };
+
+                if (dialog.ShowDialog() != DialogResult.OK)
+                    return;
+
+                lblStatus.Text = "正在导出并删除...";
+                lblStatus.ForeColor = Color.Blue;
+                progressBar.Value = 0;
+
+                Task.Run(async () =>
+                {
+                    try
+                    {
+                        var searchService = new Office365MailSearchService(
+                            _exchangeOnlineService.GraphAccessToken,
+                            _exchangeOnlineService.Email);
+
+                        var progress = new Progress<int>(p =>
+                        {
+                            this.Invoke(new Action(() => progressBar.Value = p));
+                        });
+
+                        var (exported, deleted) = await searchService.ExportAndDeleteAsync(selectedEmails, dialog.FileName, progress);
+
+                        this.Invoke(new Action(() =>
+                        {
+                            lblStatus.Text = $"完成: 导出 {exported} 封, 删除 {deleted} 封";
+                            lblStatus.ForeColor = Color.Green;
+                            MessageBox.Show($"操作完成\n已导出: {exported} 封\n已删除: {deleted} 封", "完成", MessageBoxButtons.OK, MessageBoxIcon.Information);
+
+                            // 刷新列表
+                            btnSearch.PerformClick();
+                        }));
+                    }
+                    catch (Exception ex)
+                    {
+                        this.Invoke(new Action(() =>
+                        {
+                            lblStatus.Text = "操作失败: " + ex.Message;
+                            lblStatus.ForeColor = Color.Red;
+                        }));
+                        Serilog.Log.Error(ex, "导出并删除失败");
+                    }
+                });
+            };
+
+            // 添加控件
+            panel.Controls.Add(lblTitle);
+            panel.Controls.Add(lblNote);
+            panel.Controls.Add(lblKeyword);
+            panel.Controls.Add(txtKeyword);
+            panel.Controls.Add(lblAttachment);
+            panel.Controls.Add(txtAttachment);
+            panel.Controls.Add(lblStartDate);
+            panel.Controls.Add(dtpStartDate);
+            panel.Controls.Add(lblEndDate);
+            panel.Controls.Add(dtpEndDate);
+            panel.Controls.Add(lblMaxResults);
+            panel.Controls.Add(numMaxResults);
+            panel.Controls.Add(btnSearch);
+            panel.Controls.Add(btnExportPst);
+            panel.Controls.Add(btnExportDelete);
+            panel.Controls.Add(lblResults);
+            panel.Controls.Add(dgvResults);
+            panel.Controls.Add(lblSelected);
+            panel.Controls.Add(btnSelectAll);
+            panel.Controls.Add(btnDeselectAll);
+            panel.Controls.Add(progressBar);
+            panel.Controls.Add(lblStatus);
 
             return panel;
         }
