@@ -19665,6 +19665,12 @@ namespace MailConverter
                     _exchangeOnlineCurrentAccount = null;
                     Serilog.Log.Information("已断开Exchange Online Session");
                 }
+
+                // 切换到Exchange Online 百宝箱时，刷新OAuth账户列表
+                if (tabText == "Exchange Online 百宝箱")
+                {
+                    LoadSavedOAuthAccounts();
+                }
             }
         }
 
