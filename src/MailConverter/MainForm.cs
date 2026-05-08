@@ -22384,8 +22384,15 @@ $results | Out-String
             {
                 if (string.IsNullOrWhiteSpace(txtOAuthName.Text) || string.IsNullOrWhiteSpace(txtClientId.Text))
                 { MessageBox.Show("请输入账户名称和 Client ID", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
-                SettingsService.AddOrUpdateOAuthAccount(txtOAuthName.Text.Trim(), txtClientId.Text.Trim(), txtTenantId.Text.Trim(), txtOAuthEmail.Text.Trim());
-                settings = SettingsService.Load();
+                var account = new OAuthAccount
+                {
+                    Name = txtOAuthName.Text.Trim(),
+                    ClientId = txtClientId.Text.Trim(),
+                    TenantId = txtTenantId.Text.Trim(),
+                    Email = txtOAuthEmail.Text.Trim()
+                };
+                ConfigService.SaveOAuthAccount(account);
+                settings = ConfigService.LoadAll();
                 RefreshOAuthList();
                 MessageBox.Show("保存成功", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             };
@@ -22394,8 +22401,8 @@ $results | Out-String
                 if (lstOAuth.SelectedItem == null) { MessageBox.Show("请先选择要删除的账户", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
                 if (MessageBox.Show($"确定要删除账户 \"{lstOAuth.SelectedItem}\" 吗?", "确认", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
                 {
-                    SettingsService.RemoveOAuthAccount(lstOAuth.SelectedItem.ToString());
-                    settings = SettingsService.Load();
+                    ConfigService.DeleteOAuthAccount(lstOAuth.SelectedItem.ToString());
+                    settings = ConfigService.LoadAll();
                     RefreshOAuthList();
                     txtOAuthName.Clear(); txtClientId.Clear(); txtTenantId.Clear(); txtOAuthEmail.Clear();
                 }
