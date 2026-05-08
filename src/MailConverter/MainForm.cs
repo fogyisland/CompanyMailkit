@@ -1116,7 +1116,7 @@ namespace MailConverter
             toolMenu.DropDownItems.Add(openLogItem);
             toolMenu.DropDownItems.Add(openDataFolderItem);
             toolMenu.DropDownItems.Add(new ToolStripSeparator());
-            var preferencesItem = new ToolStripMenuItem("首选项...", null, (s, e) => ShowSettingsDialog());
+            var preferencesItem = new ToolStripMenuItem("首选项...", null, (s, e) => { ShowSettingsDialog(); LoadSavedOAuthAccounts(); });
             toolMenu.DropDownItems.Add(preferencesItem);
 
             // 添加 Service Principal 注册功能
