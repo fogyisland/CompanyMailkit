@@ -365,12 +365,61 @@ def create_pst_and_import(pst_path, eml_dir):
                     mail.To = str(msg.get('to', ''))
                     mail.CC = str(msg.get('cc', ''))
 
+                    # 尝试多种方式获取邮件正文
+                    body_set = False
                     body_part = msg.get_body(preferencelist=('html', 'plain'))
                     if body_part:
-                        if body_part.get_content_type() == 'text/html':
-                            mail.HTMLBody = body_part.get_content()
-                        else:
-                            mail.Body = body_part.get_content()
+                        content = body_part.get_content()
+                        if content and len(content.strip()) > 0:
+                            if body_part.get_content_type() == 'text/html':
+                                mail.HTMLBody = content
+                            else:
+                                mail.Body = content
+                            body_set = True
+
+                    # 如果正文为空，尝试其他方式获取
+                    if not body_set:
+                        # 尝试从多部分消息中直接获取
+                        for part in msg.walk():
+                            content_type = part.get_content_type()
+                            if content_type in ('text/html', 'text/plain'):
+                                try:
+                                    content = part.get_content()
+                                    if content and len(str(content).strip()) > 0:
+                                        if content_type == 'text/html':
+                                            mail.HTMLBody = str(content)
+                                        else:
+                                            mail.Body = str(content)
+                                        body_set = True
+                                        break
+                                except:
+                                    try:
+                                        payload = part.get_payload(decode=True)
+                                        if payload:
+                                            charset = part.get_content_charset() or 'utf-8'
+                                            content = payload.decode(charset, errors='replace')
+                                            if len(content.strip()) > 0:
+                                                if content_type == 'text/html':
+                                                    mail.HTMLBody = content
+                                                else:
+                                                    mail.Body = content
+                                                body_set = True
+                                                break
+                                    except:
+                                        pass
+
+                    # 检查是否是日历邀请
+                    if not body_set:
+                        for part in msg.iter_attachments():
+                            fname = part.get_filename()
+                            if fname and (fname.lower().endswith('.ics') or 'calendar' in fname.lower()):
+                                try:
+                                    cal_content = part.get_payload(decode=True)
+                                    if cal_content:
+                                        mail.Body = "[日历邀请]\n" + cal_content.decode('utf-8', errors='replace')[:500]
+                                        body_set = True
+                                except:
+                                    pass
 
                     for part in msg.iter_attachments():
                         fname = part.get_filename()

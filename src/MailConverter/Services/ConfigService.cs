@@ -66,6 +66,7 @@ namespace MailConverter
             var file = Path.Combine(OAuthDir, SanitizeFileName(account.Name) + ".inf");
             SaveInfFile(file, account.Name, new Dictionary<string, string>
             {
+                { "Name", account.Name },
                 { "ClientId", account.ClientId },
                 { "TenantId", account.TenantId },
                 { "Email", account.Email }
@@ -114,6 +115,7 @@ namespace MailConverter
             var file = Path.Combine(ImapDir, SanitizeFileName(account.Name) + ".inf");
             SaveInfFile(file, account.Name, new Dictionary<string, string>
             {
+                { "Name", account.Name },
                 { "Host", account.Host },
                 { "Port", account.Port.ToString() },
                 { "UseSsl", account.UseSsl.ToString() },
@@ -158,6 +160,7 @@ namespace MailConverter
             var file = Path.Combine(CardDavDir, SanitizeFileName(account.Name) + ".inf");
             SaveInfFile(file, account.Name, new Dictionary<string, string>
             {
+                { "Name", account.Name },
                 { "Provider", account.Provider },
                 { "ServerUrl", account.ServerUrl }
             });
@@ -201,6 +204,7 @@ namespace MailConverter
             var file = Path.Combine(PstDir, SanitizeFileName(account.Name) + ".inf");
             SaveInfFile(file, account.Name, new Dictionary<string, string>
             {
+                { "Name", account.Name },
                 { "TenantId", account.TenantId },
                 { "ClientId", account.ClientId },
                 { "ClientSecret", account.ClientSecret },

@@ -254,7 +254,7 @@ namespace MailConverter
         private bool _isSideNavCollapsed = false;
         private readonly int SIDENAV_EXPANDED_WIDTH = 200;
         private readonly int SIDENAV_COLLAPSED_WIDTH = 50;
-        private readonly int SIDENAV_ANIM_STEP = 10;
+        private readonly int SIDENAV_ANIM_STEP = 40;
         private readonly Color NAV_DEFAULT_BG = Color.FromArgb(50, 50, 50);
         private readonly Color NAV_SELECTED_BG = Color.FromArgb(70, 70, 70);
         private readonly Color NAV_HOVER_BG = Color.FromArgb(60, 60, 60);
@@ -900,6 +900,33 @@ namespace MailConverter
             Application.Exit();
         }
 
+        private void SaveEnvironment_Click(object sender, EventArgs e)
+        {
+            try
+            {
+                var settings = ConfigService.LoadAll();
+
+                // 保存当前选中的Tab索引
+                if (_onlineToolkitNestedTabControl != null && _onlineToolkitNestedTabControl.SelectedIndex >= 0)
+                {
+                    settings.LastUsedEmail = _onlineToolkitNestedTabControl.SelectedIndex.ToString();
+                }
+
+                ConfigService.SaveAll(settings);
+
+                // 保存到偏好设置
+                var prefs = ConfigService.LoadPreferences();
+                prefs.LastUsedEmail = settings.LastUsedEmail;
+                ConfigService.SavePreferences(prefs);
+
+                MessageBox.Show("当前环境已保存", "保存环境", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("保存环境失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
         private void CheckEnv_Click(object sender, EventArgs e)
         {
             try
@@ -1096,11 +1123,9 @@ namespace MailConverter
 
             // 文件菜单
             var fileMenu = new ToolStripMenuItem("文件(&F)");
-            var openFileItem = new ToolStripMenuItem("打开文件...", null, OpenFile_Click);
-            var openDirItem = new ToolStripMenuItem("打开目录...", null, OpenDir_Click);
+            var saveEnvItem = new ToolStripMenuItem("保存当前环境", null, SaveEnvironment_Click);
             var exitItem = new ToolStripMenuItem("退出", null, Exit_Click);
-            fileMenu.DropDownItems.Add(openFileItem);
-            fileMenu.DropDownItems.Add(openDirItem);
+            fileMenu.DropDownItems.Add(saveEnvItem);
             fileMenu.DropDownItems.Add(new ToolStripSeparator());
             fileMenu.DropDownItems.Add(exitItem);
 

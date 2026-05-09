@@ -17,11 +17,13 @@ namespace MailConverter
     public class MailSearchResult
     {
         public string Id { get; set; }
+        public string UserId { get; set; }
         public string Subject { get; set; }
         public string From { get; set; }
         public DateTime ReceivedDateTime { get; set; }
         public bool HasAttachments { get; set; }
         public string ToRecipients { get; set; }
+        public string AttachmentNames { get; set; }
         public bool IsSelected { get; set; } = true;
     }
 
@@ -34,6 +36,9 @@ namespace MailConverter
         private readonly string _accessToken;
         private readonly string _email;
         private static readonly HttpClient _httpClient = new HttpClient();
+
+        // 进度回调
+        public Action<string, int, int> OnProgress { get; set; }
 
         public Office365MailSearchService(string accessToken, string email)
         {
@@ -58,23 +63,23 @@ namespace MailConverter
             string attachmentName,
             DateTime? startDate,
             DateTime? endDate,
-            int maxResults = 100)
+            int maxResults = 100,
+            bool onlyWithAttachments = false)
         {
             var results = new List<MailSearchResult>();
 
             try
             {
-                // 构建搜索查询
+                // 构建搜索查询 - 使用 KQL 语法
                 var searchParts = new List<string>();
 
                 if (!string.IsNullOrWhiteSpace(keyword))
                 {
-                    // 关键字搜索 - 使用 subject: 前缀只搜索主题
-                    // 如果包含空格则用引号包围
+                    // 如果包含空格则用引号包围，直接搜索
                     if (keyword.Contains(' '))
-                        searchParts.Add($"subject:\"{keyword}\"");
+                        searchParts.Add($"\"{keyword}\"");
                     else
-                        searchParts.Add($"subject:{keyword}");
+                        searchParts.Add(keyword);
                 }
 
                 if (!string.IsNullOrWhiteSpace(attachmentName))
@@ -90,32 +95,143 @@ namespace MailConverter
                 }
 
                 var searchQuery = string.Join(" AND ", searchParts);
-                Log.Information("开始搜索邮件, Query: {Query}, MaxResults: {Max}", searchQuery, maxResults);
+                Log.Information("开始搜索所有用户邮件, Query: {Query}, MaxResults: {Max}", searchQuery, maxResults);
 
-                // 构建请求 URL
-                var url = $"https://graph.microsoft.com/v1.0/users/{_email}/messages" +
-                         $"?$search=\"{Uri.EscapeDataString(searchQuery)}\"" +
-                         $"&$select=id,subject,from,receivedDateTime,hasAttachments,toRecipients" +
-                         $"&$top={maxResults}" +
-                         $"&$orderby=receivedDateTime desc";
+                // 首先获取所有用户列表
+                var users = await GetAllUsersAsync();
+                Log.Information("找到 {Count} 个用户", users.Count);
 
-                // 如果有日期范围，使用筛选代替搜索（搜索+日期筛选较复杂）
-                if (startDate.HasValue || endDate.HasValue)
+                if (users.Count == 0)
                 {
-                    // 改用筛选方式结合搜索
-                    url = $"https://graph.microsoft.com/v1.0/users/{_email}/messages" +
-                         $"?$search=\"{Uri.EscapeDataString(searchQuery)}\"" +
-                         $"&$filter=";
-
-                    var dateFilters = new List<string>();
-                    if (startDate.HasValue)
-                        dateFilters.Add($"receivedDateTime ge {startDate.Value:yyyy-MM-ddTHH:mm:ssZ}");
-                    if (endDate.HasValue)
-                        dateFilters.Add($"receivedDateTime le {endDate.Value:yyyy-MM-ddTHH:mm:ssZ}");
-
-                    url += string.Join(" and ", dateFilters);
-                    url += $"&$select=id,subject,from,receivedDateTime,hasAttachments,toRecipients&$top={maxResults}&$orderby=receivedDateTime desc";
+                    Log.Warning("未找到任何用户");
+                    return results;
                 }
+
+                // 对每个用户搜索邮件
+                int currentUserIndex = 0;
+                foreach (var user in users)
+                {
+                    currentUserIndex++;
+                    OnProgress?.Invoke($"正在搜索用户 {currentUserIndex}/{users.Count}: {user}...", currentUserIndex * 100 / users.Count, results.Count);
+
+                    if (results.Count >= maxResults) break;
+
+                    var userResults = await SearchUserMessagesAsync(user, keyword, attachmentName, startDate, endDate, maxResults - results.Count, onlyWithAttachments);
+                    results.AddRange(userResults);
+                }
+
+                OnProgress?.Invoke($"搜索完成，共 {results.Count} 封邮件", 100, results.Count);
+                Log.Information("搜索完成, 共找到 {Count} 封邮件", results.Count);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "搜索邮件异常");
+                OnProgress?.Invoke($"搜索异常: {ex.Message}", 0, 0);
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// 获取所有用户列表
+        /// </summary>
+        private async Task<List<string>> GetAllUsersAsync()
+        {
+            var users = new List<string>();
+            var url = "https://graph.microsoft.com/v1.0/users?$select=id,mail&$top=999";
+
+            while (!string.IsNullOrEmpty(url))
+            {
+                var response = await _httpClient.GetAsync(url);
+                var content = await response.Content.ReadAsStringAsync();
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    Log.Error("获取用户列表失败: {StatusCode}, {Content}", response.StatusCode, content);
+                    break;
+                }
+
+                using (var doc = JsonDocument.Parse(content))
+                {
+                    var root = doc.RootElement;
+
+                    if (root.TryGetProperty("value", out var userList))
+                    {
+                        foreach (var user in userList.EnumerateArray())
+                        {
+                            var userId = GetStringProperty(user, "id");
+                            var mail = GetStringProperty(user, "mail");
+                            if (!string.IsNullOrEmpty(userId))
+                            {
+                                users.Add(string.IsNullOrEmpty(mail) ? userId : mail);
+                            }
+                        }
+                    }
+
+                    // 获取下一页链接
+                    if (root.TryGetProperty("@odata.nextLink", out var nextLink))
+                    {
+                        url = nextLink.GetString();
+                    }
+                    else
+                    {
+                        break;
+                    }
+                }
+            }
+
+            return users;
+        }
+
+        /// <summary>
+        /// 搜索指定用户的邮件
+        /// </summary>
+        private async Task<List<MailSearchResult>> SearchUserMessagesAsync(
+            string userId,
+            string keyword,
+            string attachmentName,
+            DateTime? startDate,
+            DateTime? endDate,
+            int maxResults,
+            bool onlyWithAttachments = false)
+        {
+            var results = new List<MailSearchResult>();
+
+            try
+            {
+                // 构建过滤条件 - 使用 $filter with contains 替代 $search
+                var filters = new List<string>();
+
+                // 日期过滤
+                if (startDate.HasValue)
+                    filters.Add($"receivedDateTime ge {startDate.Value:yyyy-MM-ddTHH:mm:ssZ}");
+                if (endDate.HasValue)
+                    filters.Add($"receivedDateTime le {endDate.Value:yyyy-MM-ddTHH:mm:ssZ}");
+
+                // 关键字过滤（搜索主题）
+                if (!string.IsNullOrWhiteSpace(keyword))
+                {
+                    filters.Add($"contains(subject,'{EscapeFilterString(keyword)}')");
+                }
+
+                // 仅显示有附件的邮件
+                if (onlyWithAttachments)
+                {
+                    filters.Add("hasAttachments eq true");
+                }
+
+                // 构建基础 URL
+                var url = $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(userId)}/messages";
+
+                // 添加过滤条件
+                if (filters.Count > 0)
+                {
+                    url += "?$filter=" + string.Join(" and ", filters);
+                }
+
+                url += $"&$select=id,subject,from,receivedDateTime,hasAttachments,toRecipients&$top={maxResults}&$orderby=receivedDateTime desc";
+
+                Log.Information("搜索 URL: {Url}", url);
 
                 // 分页获取所有结果
                 while (!string.IsNullOrEmpty(url) && results.Count < maxResults)
@@ -125,7 +241,37 @@ namespace MailConverter
 
                     if (!response.IsSuccessStatusCode)
                     {
-                        Log.Error("搜索邮件失败: {StatusCode}, {Content}", response.StatusCode, content);
+                        // 某些用户可能没有邮件权限，跳过
+                        if (response.StatusCode != System.Net.HttpStatusCode.Forbidden)
+                        {
+                            // 记录详细错误信息
+                            string errorDetail = "";
+                            try
+                            {
+                                using (var errDoc = JsonDocument.Parse(content))
+                                {
+                                    if (errDoc.RootElement.TryGetProperty("error", out var error))
+                                    {
+                                        if (error.TryGetProperty("message", out var errMsg))
+                                            errorDetail = errMsg.GetString();
+                                        else if (error.TryGetProperty("code", out var errCode))
+                                            errorDetail = errCode.GetString();
+                                        else
+                                            errorDetail = error.GetRawText();
+                                    }
+                                    else
+                                    {
+                                        errorDetail = content;
+                                    }
+                                }
+                            }
+                            catch
+                            {
+                                errorDetail = string.IsNullOrEmpty(content) ? "无响应内容" : content;
+                            }
+                            Log.Warning("搜索用户 {User} 邮件失败: {StatusCode} - {Error}", userId, response.StatusCode, errorDetail);
+                            OnProgress?.Invoke($"搜索用户 {userId} 失败: {errorDetail}", 0, results.Count);
+                        }
                         break;
                     }
 
@@ -140,12 +286,31 @@ namespace MailConverter
                                 var result = new MailSearchResult
                                 {
                                     Id = GetStringProperty(msg, "id"),
+                                    UserId = userId,
                                     Subject = GetStringProperty(msg, "subject"),
                                     From = GetFromAddress(msg),
                                     ReceivedDateTime = GetDateTimeProperty(msg, "receivedDateTime"),
                                     HasAttachments = GetBoolProperty(msg, "hasAttachments"),
-                                    ToRecipients = GetToRecipients(msg)
+                                    ToRecipients = GetToRecipients(msg),
+                                    AttachmentNames = ""
                                 };
+
+                                // 如果邮件有附件，获取附件名称列表
+                                if (result.HasAttachments)
+                                {
+                                    result.AttachmentNames = await GetAttachmentNamesAsync(userId, result.Id);
+                                }
+
+                                // 如果指定了附件名过滤，且邮件有附件，则获取附件列表进行过滤
+                                if (!string.IsNullOrWhiteSpace(attachmentName) && result.HasAttachments)
+                                {
+                                    // 获取邮件附件信息（这里简化处理，假设附件名匹配）
+                                    // 实际应该调用获取附件列表的API进行验证
+                                    var attachmentFound = await CheckAttachmentExistsAsync(userId, result.Id, attachmentName);
+                                    if (!attachmentFound)
+                                        continue;
+                                }
+
                                 results.Add(result);
                             }
                         }
@@ -154,7 +319,6 @@ namespace MailConverter
                         if (root.TryGetProperty("@odata.nextLink", out var nextLink))
                         {
                             url = nextLink.GetString();
-                            if (results.Count >= maxResults) break;
                         }
                         else
                         {
@@ -162,12 +326,10 @@ namespace MailConverter
                         }
                     }
                 }
-
-                Log.Information("搜索完成, 找到 {Count} 封邮件", results.Count);
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "搜索邮件异常");
+                Log.Error(ex, "搜索用户 {User} 邮件异常", userId);
             }
 
             return results;
@@ -188,23 +350,39 @@ namespace MailConverter
             {
                 Log.Information("开始导出 {Count} 封邮件到 PST", emails.Count);
 
-                // 创建临时目录存放 EML 文件
-                var tempDir = Path.Combine(Path.GetTempPath(), $"MailConverter_Export_{Guid.NewGuid():N}");
-                Directory.CreateDirectory(tempDir);
-                Log.Information("临时目录: {TempDir}", tempDir);
+                // 创建临时目录存放 EML 文件，放在"搜索导出"子目录下
+                var tempBaseDir = Path.Combine(Path.GetTempPath(), $"MailConverter_Export_{Guid.NewGuid():N}");
+                var searchExportDir = Path.Combine(tempBaseDir, "搜索导出");
+                Directory.CreateDirectory(searchExportDir);
+                Log.Information("临时目录: {TempDir}", searchExportDir);
 
                 // 获取邮件内容并保存为 EML
                 int count = 0;
+                int savedCount = 0;
                 foreach (var email in emails.Where(e => e.IsSelected))
                 {
-                    var emlContent = await GetMailRawContentAsync(email.Id);
-                    if (!string.IsNullOrEmpty(emlContent))
+                    var emlContent = await GetMailRawContentAsync(email.UserId, email.Id);
+                    if (emlContent != null && emlContent.Length > 0)
                     {
-                        var emlPath = Path.Combine(tempDir, $"{count + 1:D5}_{SanitizeFileName(email.Subject)}.eml");
-                        await Task.Run(() => File.WriteAllText(emlPath, emlContent, Encoding.UTF8));
+                        var emlPath = Path.Combine(searchExportDir, $"{count + 1:D5}_{SanitizeFileName(email.Subject)}.eml");
+                        await Task.Run(() => File.WriteAllBytes(emlPath, emlContent));
+                        savedCount++;
+                        Log.Information("已保存 EML: {Path}, 大小: {Size} bytes", emlPath, emlContent.Length);
+                    }
+                    else
+                    {
+                        Log.Warning("邮件内容为空: {Subject} ({Id})", email.Subject, email.Id);
                     }
                     count++;
                     progress?.Report(count * 100 / emails.Count);
+                }
+
+                Log.Information("共保存 {SavedCount}/{TotalCount} 封邮件", savedCount, count);
+
+                if (savedCount == 0)
+                {
+                    Log.Error("没有邮件内容可导出");
+                    return null;
                 }
 
                 // 使用 Python 脚本创建 PST
@@ -222,8 +400,8 @@ namespace MailConverter
                     return null;
                 }
 
-                var arguments = $"\"{scriptPath}\" \"{outputPstPath}\" \"{tempDir}\"";
-                var startInfo = Program.CreatePythonStartInfo(pythonExe, $"\"{scriptPath}\" \"{outputPstPath}\" \"{tempDir}\"");
+                var arguments = $"\"{scriptPath}\" \"{outputPstPath}\" \"{tempBaseDir}\"";
+                var startInfo = Program.CreatePythonStartInfo(pythonExe, $"\"{scriptPath}\" \"{outputPstPath}\" \"{tempBaseDir}\"");
 
                 Log.Information("执行 Python 脚本: {Script}", scriptPath);
 
@@ -245,7 +423,7 @@ namespace MailConverter
                 // 清理临时目录
                 try
                 {
-                    Directory.Delete(tempDir, true);
+                    Directory.Delete(tempBaseDir, true);
                     Log.Information("已清理临时目录");
                 }
                 catch (Exception ex)
@@ -292,7 +470,7 @@ namespace MailConverter
 
                     // 再删除
                     var selectedEmails = emails.Where(e => e.IsSelected).ToList();
-                    deleted = await DeleteEmailsAsync(selectedEmails.Select(e => e.Id).ToList(), progress);
+                    deleted = await DeleteEmailsAsync(selectedEmails.Select(e => (e.UserId, e.Id)).ToList(), progress);
                 }
             }
             catch (Exception ex)
@@ -309,7 +487,7 @@ namespace MailConverter
         /// <param name="mailIds">邮件 ID 列表</param>
         /// <param name="progress">进度回调</param>
         /// <returns>删除成功的数量</returns>
-        public async Task<int> DeleteEmailsAsync(List<string> mailIds, IProgress<int> progress = null)
+        public async Task<int> DeleteEmailsAsync(List<(string UserId, string MailId)> mailIds, IProgress<int> progress = null)
         {
             int deleted = 0;
             int total = mailIds.Count;
@@ -320,17 +498,17 @@ namespace MailConverter
 
                 for (int i = 0; i < mailIds.Count; i++)
                 {
-                    var mailId = mailIds[i];
+                    var (userId, mailId) = mailIds[i];
 
-                    // 硬删除 - 永久删除，不经过回收站
-                    var url = $"https://graph.microsoft.com/v1.0/users/{_email}/messages/{mailId}/permanentDelete";
+                    // 使用标准 DELETE API 移动到已删除邮件文件夹
+                    var url = $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(userId)}/messages/{mailId}";
 
-                    var response = await _httpClient.PostAsync(url, null);
+                    var response = await _httpClient.DeleteAsync(url);
 
                     if (response.IsSuccessStatusCode)
                     {
                         deleted++;
-                        Log.Debug("已永久删除邮件: {MailId}", mailId);
+                        Log.Debug("已删除邮件: {MailId} (用户: {UserId})", mailId, userId);
                     }
                     else
                     {
@@ -361,22 +539,26 @@ namespace MailConverter
         /// <summary>
         /// 获取邮件原始内容
         /// </summary>
-        private async Task<string> GetMailRawContentAsync(string mailId)
+        private async Task<byte[]> GetMailRawContentAsync(string userId, string mailId)
         {
             try
             {
-                var url = $"https://graph.microsoft.com/v1.0/users/{_email}/messages/{mailId}/$value";
+                var url = $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(userId)}/messages/{mailId}/$value";
                 var response = await _httpClient.GetAsync(url);
 
                 if (response.IsSuccessStatusCode)
                 {
-                    var bytes = await response.Content.ReadAsByteArrayAsync();
-                    return Encoding.UTF8.GetString(bytes);
+                    return await response.Content.ReadAsByteArrayAsync();
+                }
+                else
+                {
+                    var error = await response.Content.ReadAsStringAsync();
+                    Log.Warning("获取邮件内容失败: {MailId}, Status: {Status}, Error: {Error}", mailId, response.StatusCode, error);
                 }
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "获取邮件内容失败: {MailId}", mailId);
+                Log.Error(ex, "获取邮件内容异常: {MailId}", mailId);
             }
             return null;
         }
@@ -442,6 +624,86 @@ namespace MailConverter
                 return prop.GetBoolean();
             }
             return false;
+        }
+
+        /// <summary>
+        /// 获取邮件附件名称列表
+        /// </summary>
+        private async Task<string> GetAttachmentNamesAsync(string userId, string messageId)
+        {
+            try
+            {
+                var url = $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(userId)}/messages/{messageId}/attachments?$select=name";
+                var response = await _httpClient.GetAsync(url);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var content = await response.Content.ReadAsStringAsync();
+                    using (var doc = JsonDocument.Parse(content))
+                    {
+                        if (doc.RootElement.TryGetProperty("value", out var attachments))
+                        {
+                            var names = new List<string>();
+                            foreach (var att in attachments.EnumerateArray())
+                            {
+                                var name = GetStringProperty(att, "name");
+                                if (!string.IsNullOrEmpty(name))
+                                    names.Add(name);
+                            }
+                            return string.Join(", ", names);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("获取附件名称失败: {MessageId}, {Error}", messageId, ex.Message);
+            }
+            return "";
+        }
+
+        /// <summary>
+        /// 检查邮件是否包含指定名称的附件
+        /// </summary>
+        private async Task<bool> CheckAttachmentExistsAsync(string userId, string messageId, string attachmentName)
+        {
+            try
+            {
+                var url = $"https://graph.microsoft.com/v1.0/users/{Uri.EscapeDataString(userId)}/messages/{messageId}/attachments?$select=name";
+                var response = await _httpClient.GetAsync(url);
+
+                if (response.IsSuccessStatusCode)
+                {
+                    var content = await response.Content.ReadAsStringAsync();
+                    using (var doc = JsonDocument.Parse(content))
+                    {
+                        if (doc.RootElement.TryGetProperty("value", out var attachments))
+                        {
+                            foreach (var att in attachments.EnumerateArray())
+                            {
+                                var name = GetStringProperty(att, "name");
+                                if (name.IndexOf(attachmentName, StringComparison.OrdinalIgnoreCase) >= 0)
+                                    return true;
+                            }
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("检查附件失败: {MessageId}, {Error}", messageId, ex.Message);
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// 转义 filter 字符串中的单引号
+        /// </summary>
+        private string EscapeFilterString(string input)
+        {
+            if (string.IsNullOrEmpty(input))
+                return input;
+            return input.Replace("'", "''");
         }
 
         /// <summary>
