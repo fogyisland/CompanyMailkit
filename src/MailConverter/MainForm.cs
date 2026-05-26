@@ -27,6 +27,7 @@ namespace MailConverter
         private TextBox txtFileName;
         private TextBox txtOstOutputDir;
         private TextBox txtOstFileName;
+        private ComboBox cmbOstProfile;
         private Button btnOstBrowse;
         private Button btnOstConvert;
         private bool isOstConverting;
@@ -558,6 +559,12 @@ namespace MailConverter
                         settings.RegisterDate = installDate;
                     settings.IsRegistered = true;
 
+                    // 如果是已购买激活，保存激活码
+                    if (result.IsActivated && !string.IsNullOrEmpty(result.ActivationCode))
+                    {
+                        settings.RegisterSerialNumber = result.ActivationCode;
+                    }
+
                     // 保存到注册表和INF文件
                     RegistryService.SaveRegistration(settings);
                     ConfigService.SaveRegistration(settings);
@@ -990,20 +997,10 @@ namespace MailConverter
 
         private void About_Click(object sender, EventArgs e)
         {
-            MessageBox.Show(
-                "小铭邮件百宝箱\n\n" +
-                "版本: 1.0.0\n" +
-                "作者: 徐鹏\n\n" +
-                "功能:\n" +
-                "- EML 转 PST\n" +
-                "- OST 转 PST\n" +
-                "- IMAP 收件\n" +
-                "- IMAP+EWS 同步\n" +
-                "- Excel/CSV 导入\n\n" +
-                "© 2026 版权所有",
-                "关于",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            using (var aboutForm = new AboutForm())
+            {
+                aboutForm.ShowDialog(this);
+            }
         }
 
         private void CheckUpdate_Click(object sender, EventArgs e)
@@ -1055,12 +1052,19 @@ namespace MailConverter
                     settings.RegisterExpireDate = result.ExpireDate;
                     if (DateTime.TryParse(result.InstallDate, out var installDate))
                         settings.RegisterDate = installDate;
+
+                    // 如果是已购买激活，保存激活码
+                    if (result.IsActivated && !string.IsNullOrEmpty(result.ActivationCode))
+                    {
+                        settings.RegisterSerialNumber = result.ActivationCode;
+                    }
+
                     ConfigService.SaveAll(settings);
 
                     // 刷新状态显示
                     UpdateRegistrationStatus();
 
-                    var versionType = string.IsNullOrEmpty(settings.RegisterSerialNumber) ? "试用版" : "订阅版";
+                    var versionType = result.IsActivated ? "已授权" : (string.IsNullOrEmpty(settings.RegisterSerialNumber) ? "试用版" : "订阅版");
                     MessageBox.Show(
                         $"{versionType}\n剩余天数：{result.RemainingDays} 天\n到期日期：{result.ExpireDate}",
                         "注册状态",
@@ -2011,34 +2015,71 @@ namespace MailConverter
 
             var lblNote = new Label
             {
-                Text = "将Outlook中的OST数据转换为PST文件",
-                Location = new Point(20, 20),
+                Text = "将Outlook中的OST数据转换为PST文件，支持选择账户和递归子目录",
+                Location = new Point(20, 5),
                 AutoSize = true
             };
 
-            var lblOutput = new Label { Text = "输出目录:", Location = new Point(20, 60), AutoSize = true };
+            var lblOstSource = new Label { Text = "选择OST账户:", Location = new Point(20, 35), AutoSize = true };
+            cmbOstProfile = new ComboBox();
+            cmbOstProfile.Name = "cmbOstProfile";
+            cmbOstProfile.Location = new Point(110, 33);
+            cmbOstProfile.Size = new Size(300, 25);
+            cmbOstProfile.DropDownStyle = ComboBoxStyle.DropDownList;
+
+            var btnRefreshOst = new Button();
+            btnRefreshOst.Name = "btnRefreshOst";
+            btnRefreshOst.Location = new Point(420, 31);
+            btnRefreshOst.Size = new Size(80, 25);
+            btnRefreshOst.Text = "刷新";
+            btnRefreshOst.Click += async (s, e) => {
+                btnRefreshOst.Enabled = false;
+                var result = MessageBox.Show("即将连接Outlook获取账户列表。\n如Outlook未打开，请先打开后再继续。\n\n是否继续？", "提示", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+                if (result != DialogResult.Yes) { btnRefreshOst.Enabled = true; return; }
+
+                cmbOstProfile.Items.Clear();
+                try {
+                    var profiles = await Task.Run(() => GetOutlookOstProfiles());
+                    foreach (var p in profiles) cmbOstProfile.Items.Add(p);
+                    if (cmbOstProfile.Items.Count > 0) cmbOstProfile.SelectedIndex = 0;
+                    else MessageBox.Show("未找到OST账户，请确认Outlook已配置Exchange/Office 365账户", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                } catch (Exception ex) { MessageBox.Show("获取账户失败: " + ex.Message, "错误", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+                finally { btnRefreshOst.Enabled = true; }
+            };
+
+            var lblOutput = new Label { Text = "输出目录:", Location = new Point(20, 70), AutoSize = true };
             txtOstOutputDir = new TextBox();
-            txtOstOutputDir.Location = new Point(100, 58);
-            txtOstOutputDir.Size = new Size(380, 25);
+            txtOstOutputDir.Location = new Point(110, 68);
+            txtOstOutputDir.Size = new Size(370, 25);
 
             btnOstBrowse = new Button();
-            btnOstBrowse.Location = new Point(490, 56);
+            btnOstBrowse.Location = new Point(490, 66);
             btnOstBrowse.Size = new Size(80, 25);
             btnOstBrowse.Text = "浏览...";
             btnOstBrowse.Click += BtnOstBrowse_Click;
 
-            var lblFileName = new Label { Text = "文件名:", Location = new Point(20, 95), AutoSize = true };
+            var lblFileName = new Label { Text = "文件名:", Location = new Point(20, 105), AutoSize = true };
             txtOstFileName = new TextBox();
-            txtOstFileName.Location = new Point(100, 93);
-            txtOstFileName.Size = new Size(380, 25);
+            txtOstFileName.Location = new Point(110, 103);
+            txtOstFileName.Size = new Size(370, 25);
             txtOstFileName.Text = "ost_backup";
 
             btnOstConvert = new Button();
-            btnOstConvert.Location = new Point(300, 140);
+            btnOstConvert.Location = new Point(300, 150);
             btnOstConvert.Size = new Size(120, 35);
             btnOstConvert.Text = "开始转换";
             btnOstConvert.Font = new Font(btnOstConvert.Font, FontStyle.Bold);
             btnOstConvert.Click += BtnOstConvert_Click;
+
+            panel.Controls.Add(lblOstSource);
+            panel.Controls.Add(cmbOstProfile);
+            panel.Controls.Add(btnRefreshOst);
+            panel.Controls.Add(lblOutput);
+            panel.Controls.Add(txtOstOutputDir);
+            panel.Controls.Add(btnOstBrowse);
+            panel.Controls.Add(lblFileName);
+            panel.Controls.Add(txtOstFileName);
+            panel.Controls.Add(btnOstConvert);
 
             var lblNote2 = new Label
             {
@@ -3118,8 +3159,30 @@ namespace MailConverter
 
             txtImapEmail = new TextBox();
             txtImapEmail.Location = new Point(120, yPos - 3);
-            txtImapEmail.Size = new Size(350, 23);
+            txtImapEmail.Size = new Size(280, 23);
             panel.Controls.Add(txtImapEmail);
+
+            var btnLoadImapAccount = new Button { Text = "📋 加载账户", Location = new Point(410, yPos - 3), Size = new Size(90, 25) };
+            btnLoadImapAccount.Click += (s, e) =>
+            {
+                var accounts = SettingsService.Load().ImapAccounts;
+                if (accounts.Count == 0) { MessageBox.Show("请先在首选项中添加IMAP账户", "提示"); return; }
+                var menu = new ContextMenuStrip();
+                foreach (var acc in accounts)
+                {
+                    var item = menu.Items.Add(acc.Email);
+                    item.Click += (sender, args) =>
+                    {
+                        txtImapEmail.Text = acc.Email;
+                        txtImapPassword.Text = acc.Password;
+                        txtImapHost.Text = acc.Host;
+                        numImapPort.Value = acc.Port;
+                        chkImapSsl.Checked = acc.UseSsl;
+                    };
+                }
+                menu.Show(btnLoadImapAccount, new Point(0, btnLoadImapAccount.Height));
+            };
+            panel.Controls.Add(btnLoadImapAccount);
             yPos += 30;
 
             var lblPassword = new Label { Text = "密码/授权码:", Location = new Point(20, yPos), AutoSize = true };
@@ -20816,10 +20879,13 @@ namespace MailConverter
                     selectedFolders.Add(item.ToString());
                 }
 
-                File.AppendAllText(dbgPath, $"[{DateTime.Now:HH:mm:ss.fff}] folders={selectedFolders.Count}\n");
+                // 计算年份区间（提供默认值以防控件未初始化）
+                int startYear = numStartYear != null ? (int)numStartYear.Value : 2010;
+                int endYear = numEndYear != null ? (int)numEndYear.Value : DateTime.Now.Year;
+                var startDate = new DateTime(startYear, 1, 1);
+                var endDate = new DateTime(endYear, 12, 31, 23, 59, 59);
 
-                var startDate = new DateTime((int)numStartYear.Value, 1, 1);
-                var endDate = new DateTime((int)numEndYear.Value, 12, 31, 23, 59, 59);
+                File.AppendAllText(dbgPath, $"[{DateTime.Now:HH:mm:ss.fff}] folders={selectedFolders.Count}, years={startYear}-{endYear}\n");
 
                 // 如果勾选了下载最近N天，则覆盖startDate
                 if (chkImapFetchDaysLimit != null && chkImapFetchDaysLimit.Checked && numImapFetchDaysBack != null)
@@ -20833,7 +20899,7 @@ namespace MailConverter
                 }
                 else
                 {
-                    Log($"将收取 {(int)numStartYear.Value} 年到 {(int)numEndYear.Value} 年的邮件...", "IMAP2PST");
+                    Log($"将收取 {startYear} 年到 {endYear} 年的邮件...", "IMAP2PST");
                 }
                 File.AppendAllText(dbgPath, $"[{DateTime.Now:HH:mm:ss.fff}] calling service.FetchEmailsToPstAsync...\n");
 
@@ -21091,6 +21157,12 @@ namespace MailConverter
 
         private async void BtnOstConvert_Click(object sender, EventArgs e)
         {
+            if (cmbOstProfile == null || cmbOstProfile.SelectedItem == null)
+            {
+                MessageBox.Show("请先刷新并选择OST账户", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
             if (string.IsNullOrEmpty(txtOstOutputDir.Text))
             {
                 MessageBox.Show("请选择输出目录", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -21102,6 +21174,8 @@ namespace MailConverter
                 MessageBox.Show("请输入文件名", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 return;
             }
+
+            var selectedProfile = cmbOstProfile.SelectedItem.ToString();
 
             string outputPath = Path.Combine(txtOstOutputDir.Text, txtOstFileName.Text);
             if (!outputPath.EndsWith(".pst", StringComparison.OrdinalIgnoreCase))
@@ -21118,7 +21192,7 @@ namespace MailConverter
 
             try
             {
-                await Task.Run(() => ConvertOstToPst(outputPath));
+                await Task.Run(() => ConvertOstToPst(outputPath, selectedProfile));
                 lblStatus.Text = "转换完成!";
                 MessageBox.Show("转换完成！", "成功", MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
@@ -21136,11 +21210,11 @@ namespace MailConverter
             }
         }
 
-        private void ConvertOstToPst(string outputPath)
+        private void ConvertOstToPst(string outputPath, string profileName)
         {
             try
             {
-                Log($"Starting OST conversion -> {outputPath}", "OST2PST");
+                Log($"Starting OST conversion -> {outputPath}, Profile: {profileName}", "OST2PST");
                 UpdateStatus("正在转换OST...");
 
                 var exeDir = AppDomain.CurrentDomain.BaseDirectory;
@@ -21157,7 +21231,9 @@ namespace MailConverter
                     throw new Exception("Python环境未找到，请重新安装程序");
                 }
 
-                var startInfo = Program.CreatePythonStartInfo(pythonExe, $"\"{pythonScript}\" \"{outputPath}\"");
+                // Pass profile name as second argument
+                var profileArg = string.IsNullOrEmpty(profileName) ? "" : $" \"{profileName}\"";
+                var startInfo = Program.CreatePythonStartInfo(pythonExe, $"\"{pythonScript}\" \"{outputPath}\"{profileArg}");
                 startInfo.RedirectStandardOutput = true;
                 startInfo.RedirectStandardError = true;
                 startInfo.UseShellExecute = false;
@@ -21242,6 +21318,41 @@ namespace MailConverter
                 throw;
             }
         }
+
+        #region OST Helper Methods
+        private List<string> GetOutlookOstProfiles()
+        {
+            var profiles = new List<string>();
+            try
+            {
+                var pythonExe = Program.GetPythonExecutable();
+                if (string.IsNullOrEmpty(pythonExe)) return profiles;
+
+                var scriptPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "script", "convert_ost.py");
+                var startInfo = Program.CreatePythonStartInfo(pythonExe, $"\"{scriptPath}\" --list");
+                startInfo.RedirectStandardOutput = true;
+                startInfo.UseShellExecute = false;
+                startInfo.CreateNoWindow = true;
+
+                using (var process = new System.Diagnostics.Process { StartInfo = startInfo })
+                {
+                    process.Start();
+                    var output = process.StandardOutput.ReadToEnd();
+                    process.WaitForExit();
+
+                    foreach (var line in output.Split('\n'))
+                    {
+                        if (line.StartsWith("PROFILE:"))
+                        {
+                            profiles.Add(line.Substring(8).Trim());
+                        }
+                    }
+                }
+            }
+            catch { }
+            return profiles;
+        }
+        #endregion
 
         private void BtnBrowseSource_Click(object sender, EventArgs e)
         {

@@ -6,8 +6,119 @@ import pythoncom
 import time
 import gc
 
-def convert_ost_to_pst(pst_path, ost_path=None):
-    """Convert OST to PST"""
+def list_ost_profiles():
+    """列出所有OST账户"""
+    pythoncom.CoInitialize()
+    try:
+        outlook = win32com.client.Dispatch("Outlook.Application")
+        ns = outlook.GetNamespace("MAPI")
+        profiles = []
+        for folder in ns.Folders:
+            try:
+                store = folder.Store
+                if store and store.FilePath and '.ost' in store.FilePath.lower():
+                    profiles.append({"name": folder.Name, "path": store.FilePath})
+            except: pass
+        return profiles
+    finally:
+        pythoncom.CoUninitialize()
+
+def convert_ost_to_pst(pst_path, profile_name=None):
+    """Convert OST to PST, by profile name or first OST found"""
+
+    def copy_folder_recursive(source_folder, target_root, depth=0):
+        """递归复制文件夹及其子文件夹"""
+        nonlocal total_emails
+        indent = "  " * depth
+
+        folder_name = source_folder.Name
+        items = source_folder.Items
+        count = items.Count
+
+        # Print folder info
+        print(f"{indent}Folder: {folder_name} ({count} emails)", flush=True)
+
+        # Skip empty folders
+        if count == 0:
+            # Still create folder and process subfolders
+            target_folder = None
+            try:
+                for f in target_root.Folders:
+                    if f.Name == folder_name:
+                        target_folder = f
+                        break
+            except: pass
+
+            if not target_folder:
+                try:
+                    target_folder = target_root.Folders.Add(folder_name)
+                except:
+                    target_folder = target_root
+
+            for sub in source_folder.Folders:
+                copy_folder_recursive(sub, target_folder, depth + 1)
+            return
+
+        # Create or find target folder
+        target_folder = None
+        try:
+            for f in target_root.Folders:
+                if f.Name == folder_name:
+                    target_folder = f
+                    break
+        except: pass
+
+        if not target_folder:
+            try:
+                target_folder = target_root.Folders.Add(folder_name)
+            except:
+                target_folder = target_root
+
+        # Sort by date
+        try:
+            items.Sort("[ReceivedTime]", True)
+        except: pass
+
+        # Copy emails
+        folder_count = 0
+        for i in range(1, count + 1):
+            try:
+                mail = items(i)
+                if mail.Class != 43:
+                    continue
+
+                try:
+                    copied_mail = mail.Copy()
+                    copied_mail.Move(target_folder)
+                    folder_count += 1
+                except Exception as e:
+                    # Fallback: create new mail manually
+                    try:
+                        new_mail = outlook.CreateItem(0)
+                        new_mail.Subject = mail.Subject or "(No Subject)"
+                        if mail.Body:
+                            new_mail.Body = mail.Body
+                        if hasattr(mail, 'HTMLBody') and mail.HTMLBody:
+                            new_mail.HTMLBody = mail.HTMLBody
+                        if mail.To:
+                            new_mail.To = mail.To
+                        if mail.CC:
+                            new_mail.CC = mail.CC
+                        if mail.SentOn:
+                            new_mail.SentOn = mail.SentOn
+                        if mail.ReceivedOn:
+                            new_mail.ReceivedOn = mail.ReceivedOn
+                        new_mail.Move(target_folder)
+                        folder_count += 1
+                    except: pass
+            except: pass
+
+        total_emails += folder_count
+        print(f"{indent}  -> {folder_count} emails copied", flush=True)
+
+        # Recursively copy subfolders
+        for sub in source_folder.Folders:
+            copy_folder_recursive(sub, target_folder, depth + 1)
     print("Starting OST to PST conversion...", flush=True)
     pythoncom.CoInitialize()
 
@@ -19,18 +130,21 @@ def convert_ost_to_pst(pst_path, ost_path=None):
         ns = outlook.GetNamespace("MAPI")
         print("Outlook connected", flush=True)
 
-        # Find OST folder
+        # Find OST folder by profile name or first OST
         ost_folder = None
-        if ost_path and os.path.exists(ost_path):
+        if profile_name:
+            # Find by profile name
             for folder in ns.Folders:
                 try:
-                    store = folder.Store
-                    if store and store.FilePath and os.path.abspath(store.FilePath).lower() == os.path.abspath(ost_path).lower():
-                        ost_folder = folder
-                        print(f"Found OST by path: {folder.Name}", flush=True)
-                        break
+                    if folder.Name and folder.Name.lower() == profile_name.lower():
+                        store = folder.Store
+                        if store and store.FilePath and '.ost' in store.FilePath.lower():
+                            ost_folder = folder
+                            print(f"Found OST by name: {folder.Name}", flush=True)
+                            break
                 except: pass
         else:
+            # Find first OST
             for folder in ns.Folders:
                 try:
                     store = folder.Store
@@ -185,89 +299,10 @@ def convert_ost_to_pst(pst_path, ost_path=None):
                 print(f"Inbox done: {total_emails} emails", flush=True)
                 break
 
-        # Copy other important folders
-        print("\n=== Copying other folders ===", flush=True)
+        # Copy from account's child folders (Inbox, Sent, Deleted, etc.)
+        print("\n=== Copying from subfolders ===", flush=True)
         for subfolder in ost_folder.Folders:
-            folder_name = subfolder.Name
-            if '收件箱' in folder_name or folder_name == 'Inbox':
-                continue
-
-            items = subfolder.Items
-            count = items.Count
-            if count == 0:
-                continue
-
-            print(f"Folder: {folder_name} ({count} emails)", flush=True)
-
-            # Create folder in PST
-            target_folder = None
-            try:
-                for f in pst_folder.Folders:
-                    if f.Name == folder_name:
-                        target_folder = f
-                        break
-            except: pass
-
-            if not target_folder:
-                try:
-                    target_folder = pst_folder.Folders.Add(folder_name)
-                except:
-                    target_folder = pst_folder
-
-            # Sort by date
-            try:
-                items.Sort("[ReceivedTime]", True)
-            except: pass
-
-            # Copy emails
-            folder_count = 0
-            for i in range(1, count + 1):
-                try:
-                    mail = items(i)
-                    if mail.Class != 43:
-                        continue
-
-                    try:
-                        copied_mail = mail.Copy()
-                        copied_mail.Move(target_folder)
-                        folder_count += 1
-                    except Exception as e:
-                        # Fallback: create new mail manually
-                        new_mail = outlook.CreateItem(0)
-                        new_mail.Subject = mail.Subject or "(No Subject)"
-                        try:
-                            if mail.Body:
-                                new_mail.Body = mail.Body
-                        except: pass
-                        try:
-                            if mail.To:
-                                new_mail.To = mail.To
-                        except: pass
-                        try:
-                            if mail.CC:
-                                new_mail.CC = mail.CC
-                        except: pass
-                        try:
-                            if mail.SentOn:
-                                new_mail.SentOn = mail.SentOn
-                        except: pass
-                        try:
-                            if mail.ReceivedTime:
-                                new_mail.ReceivedTime = mail.ReceivedTime
-                        except: pass
-                        try:
-                            new_mail.CreationTime = mail.CreationTime
-                        except: pass
-
-                        new_mail.Save()
-                        new_mail.Move(target_folder)
-                        folder_count += 1
-
-                except:
-                    continue
-
-            total_emails += folder_count
-            print(f"PROGRESS:{total_emails}:{folder_name}", flush=True)
+            copy_folder_recursive(subfolder, pst_folder, 1)
 
         print(f"\nTotal: {total_emails} emails", flush=True)
 
@@ -294,11 +329,18 @@ def convert_ost_to_pst(pst_path, ost_path=None):
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("Usage: convert_ost.py <pst_path> [ost_path]")
+        print("Usage: convert_ost.py <pst_path> [profile_name]")
         sys.exit(1)
 
-    pst_path = sys.argv[1]
-    ost_path = sys.argv[2] if len(sys.argv) > 2 else None
+    # Special command to list profiles
+    if sys.argv[1] == "--list":
+        profiles = list_ost_profiles()
+        for p in profiles:
+            print(f"PROFILE:{p['name']}")
+        sys.exit(0)
 
-    success = convert_ost_to_pst(pst_path, ost_path)
+    pst_path = sys.argv[1]
+    profile_name = sys.argv[2] if len(sys.argv) > 2 else None
+
+    success = convert_ost_to_pst(pst_path, profile_name)
     sys.exit(0 if success else 1)

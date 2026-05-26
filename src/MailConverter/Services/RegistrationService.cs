@@ -20,6 +20,8 @@ namespace MailConverter
         public int? TotalDays { get; set; }
         public string ExpireDate { get; set; }
         public string InstallDate { get; set; }
+        public bool IsActivated { get; set; }
+        public string ActivationCode { get; set; }
     }
 
     public class RegistrationService
@@ -145,6 +147,20 @@ namespace MailConverter
                     if (root.TryGetProperty("expired", out var expProp))
                         expired = expProp.GetBoolean();
 
+                    // 检查激活状态
+                    bool activated = false;
+                    string activationCode = "";
+                    string activationExpireDate = "";
+                    if (root.TryGetProperty("activated", out var actProp))
+                        activated = actProp.GetBoolean();
+                    if (root.TryGetProperty("activationCode", out var actCodeProp))
+                        activationCode = actCodeProp.GetString() ?? "";
+                    if (root.TryGetProperty("activation", out var activation) && activation.ValueKind != JsonValueKind.Null)
+                    {
+                        activationExpireDate = GetStringProperty(activation, "expireDate", "expire_date");
+                    }
+
+                    // 情况1: 已注册且未过期，使用 installation 数据
                     if (registered && !expired && root.TryGetProperty("installation", out var installation))
                     {
                         int remainingDays = GetIntProperty(installation, "remainingDays", "remaining_days");
@@ -152,13 +168,9 @@ namespace MailConverter
                         string expireDate = GetStringProperty(installation, "expireDate", "expire_date");
 
                         // 如果有激活信息，优先使用激活的过期日期
-                        if (root.TryGetProperty("activation", out var activation) && activation.ValueKind != JsonValueKind.Null)
+                        if (!string.IsNullOrEmpty(activationExpireDate))
                         {
-                            string activationExpireDate = GetStringProperty(activation, "expireDate", "expire_date");
-                            if (!string.IsNullOrEmpty(activationExpireDate))
-                            {
-                                expireDate = activationExpireDate;
-                            }
+                            expireDate = activationExpireDate;
                         }
 
                         // 如果剩余天数为0或未提供，尝试从过期日期计算
@@ -176,7 +188,29 @@ namespace MailConverter
                             Message = "有效",
                             RemainingDays = remainingDays,
                             ExpireDate = expireDate,
-                            InstallDate = installDate
+                            InstallDate = installDate,
+                            IsActivated = activated,
+                            ActivationCode = activationCode
+                        };
+                    }
+                    // 情况2: 未注册但已激活（已购买），使用 activation 数据
+                    else if (!registered && activated && !string.IsNullOrEmpty(activationExpireDate))
+                    {
+                        int remainingDays = 0;
+                        if (DateTime.TryParse(activationExpireDate, out DateTime expireDt))
+                        {
+                            remainingDays = (int)Math.Max(0, (expireDt - DateTime.Now).TotalDays);
+                        }
+
+                        return new RegistrationResult
+                        {
+                            Success = true,
+                            Message = "已授权",
+                            RemainingDays = remainingDays,
+                            ExpireDate = activationExpireDate,
+                            InstallDate = "",
+                            IsActivated = true,
+                            ActivationCode = activationCode
                         };
                     }
                     else if (!registered || expired)

@@ -205,7 +205,7 @@ def get_or_create_folder(root_folder, rel_path):
                 pass
     return current_folder
 
-def super_fix_sender(mail_item, msg):
+def super_fix_sender(mail_item, msg, eml_path=None):
     """
     最强力的发件人注入：包含地址类型、显示名、SMTP地址
     """
@@ -240,6 +240,14 @@ def super_fix_sender(mail_item, msg):
             try:
                 dt = parsedate_to_datetime(str(date_str))
                 if dt.tzinfo is None: dt = dt.replace(tzinfo=timezone.utc)
+                prop_accessor.SetProperty(f"{tag_prefix}0x00390040", dt) # 发送时间
+                prop_accessor.SetProperty(f"{tag_prefix}0x0E060040", dt) # 接收时间
+            except: pass
+        else:
+            # 如果没有Date头部，使用文件修改时间作为默认值
+            try:
+                file_mtime = os.path.getmtime(eml_path)
+                dt = datetime.fromtimestamp(file_mtime, tz=timezone.utc)
                 prop_accessor.SetProperty(f"{tag_prefix}0x00390040", dt) # 发送时间
                 prop_accessor.SetProperty(f"{tag_prefix}0x0E060040", dt) # 接收时间
             except: pass
@@ -433,13 +441,13 @@ def create_pst_and_import(pst_path, eml_dir):
                                 pass
 
                     # 初次修复并保存
-                    super_fix_sender(mail, msg)
+                    super_fix_sender(mail, msg, eml_path)
 
                     # 2. 移动到 PST
                     moved_mail = mail.Move(target_folder)
 
                     # 3. 【关键】移动之后再次执行属性锁死！
-                    super_fix_sender(moved_mail, msg)
+                    super_fix_sender(moved_mail, msg, eml_path)
 
                     count += 1
                     if count % 10 == 0:

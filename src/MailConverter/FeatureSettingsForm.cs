@@ -26,13 +26,6 @@ namespace MailConverter
         private NumericUpDown _numStatusFontSize;
         private bool _isInitializing = false;
 
-        // Exchange On-Premise 管理员设置
-        private TextBox _txtOnPremiseAdminEmail;
-        private TextBox _txtOnPremisePassword;
-        private TextBox _txtOnPremiseEwsUrl;
-        private TextBox _txtOnPremiseDomain;
-        private Label _lblOnPremiseSettings;
-
         /// <summary>
         /// 设置变更时触发的事件（实时更新界面）
         /// </summary>
@@ -161,49 +154,7 @@ namespace MailConverter
             // Exchange On-Premise 百宝箱
             _chkOnPremiseToolkit = CreateMainCheckBox("Exchange On-Premise 百宝箱", 0, y);
 
-            // Tab 2: Exchange On-Premise 设置
-            var tabOnPremise = new TabPage("Exchange On-Premise");
-            tabOnPremise.Padding = new Padding(15);
-
-            var lblOnPremiseTitle = new Label
-            {
-                Text = "管理员默认凭据",
-                Location = new Point(15, 15),
-                Size = new Size(200, 25),
-                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold)
-            };
-            tabOnPremise.Controls.Add(lblOnPremiseTitle);
-
-            int y2 = 50;
-
-            // 管理员邮箱
-            var lblEmail = new Label { Text = "管理员邮箱:", Location = new Point(15, y2), Size = new Size(100, 25), TextAlign = ContentAlignment.MiddleRight };
-            _txtOnPremiseAdminEmail = new TextBox { Location = new Point(120, y2), Size = new Size(300, 25) };
-            tabOnPremise.Controls.Add(lblEmail);
-            tabOnPremise.Controls.Add(_txtOnPremiseAdminEmail);
-            y2 += 35;
-
-            // 密码
-            var lblPassword = new Label { Text = "密码:", Location = new Point(15, y2), Size = new Size(100, 25), TextAlign = ContentAlignment.MiddleRight };
-            _txtOnPremisePassword = new TextBox { Location = new Point(120, y2), Size = new Size(300, 25), UseSystemPasswordChar = true };
-            tabOnPremise.Controls.Add(lblPassword);
-            tabOnPremise.Controls.Add(_txtOnPremisePassword);
-            y2 += 35;
-
-            // EWS地址
-            var lblEwsUrl = new Label { Text = "EWS地址:", Location = new Point(15, y2), Size = new Size(100, 25), TextAlign = ContentAlignment.MiddleRight };
-            _txtOnPremiseEwsUrl = new TextBox { Location = new Point(120, y2), Size = new Size(300, 25) };
-            tabOnPremise.Controls.Add(lblEwsUrl);
-            tabOnPremise.Controls.Add(_txtOnPremiseEwsUrl);
-            y2 += 35;
-
-            // 域
-            var lblDomain = new Label { Text = "域:", Location = new Point(15, y2), Size = new Size(100, 25), TextAlign = ContentAlignment.MiddleRight };
-            _txtOnPremiseDomain = new TextBox { Location = new Point(120, y2), Size = new Size(150, 25) };
-            tabOnPremise.Controls.Add(lblDomain);
-            tabOnPremise.Controls.Add(_txtOnPremiseDomain);
-
-            // Tab 3: 界面字体
+            // Tab 2: 界面字体
             var tabFont = new TabPage("界面字体");
             tabFont.Padding = new Padding(15);
 
@@ -244,7 +195,6 @@ namespace MailConverter
             tabFont.Controls.Add(lblStatusPt);
 
             tabControl.TabPages.Add(tabFeatures);
-            tabControl.TabPages.Add(tabOnPremise);
             tabControl.TabPages.Add(tabFont);
 
             // 按钮
@@ -454,12 +404,6 @@ namespace MailConverter
             SetComboBoxByText(_cmbStatusFontName, _settings.StatusFontName);
             _numStatusFontSize.Value = (decimal)Math.Max((double)_numStatusFontSize.Minimum, Math.Min((double)_numStatusFontSize.Maximum, _settings.StatusFontSize));
 
-            // 加载 Exchange On-Premise 设置
-            _txtOnPremiseAdminEmail.Text = _settings.OnPremise_AdminEmail;
-            _txtOnPremisePassword.Text = _settings.OnPremise_Password;
-            _txtOnPremiseEwsUrl.Text = _settings.OnPremise_EwsUrl;
-            _txtOnPremiseDomain.Text = _settings.OnPremise_Domain;
-
             // 初始化完成，允许 ReadCurrentSettings 正常工作
             _isInitializing = false;
 
@@ -571,12 +515,6 @@ namespace MailConverter
             _settings.LogFontSize = (float)_numLogFontSize.Value;
             _settings.StatusFontName = _cmbStatusFontName.SelectedItem?.ToString() ?? "Microsoft Sans Serif";
             _settings.StatusFontSize = (float)_numStatusFontSize.Value;
-
-            // 保存 Exchange On-Premise 设置
-            _settings.OnPremise_AdminEmail = _txtOnPremiseAdminEmail.Text;
-            _settings.OnPremise_Password = _txtOnPremisePassword.Text;
-            _settings.OnPremise_EwsUrl = _txtOnPremiseEwsUrl.Text;
-            _settings.OnPremise_Domain = _txtOnPremiseDomain.Text;
 
             FeatureSettingsService.Save(_settings);
             this.Tag = _settings;
