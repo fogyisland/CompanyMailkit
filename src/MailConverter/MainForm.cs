@@ -2124,8 +2124,30 @@ namespace MailConverter
 
             txtImapEmlEmail = new TextBox();
             txtImapEmlEmail.Location = new Point(120, yPos - 3);
-            txtImapEmlEmail.Size = new Size(350, 23);
+            txtImapEmlEmail.Size = new Size(280, 23);
             panel.Controls.Add(txtImapEmlEmail);
+
+            var btnLoadImapEmlAccount = new Button { Text = "📋 加载账户", Location = new Point(410, yPos - 3), Size = new Size(90, 25) };
+            btnLoadImapEmlAccount.Click += (s, e) =>
+            {
+                var accounts = SettingsService.Load().ImapAccounts;
+                if (accounts.Count == 0) { MessageBox.Show("请先在首选项中添加IMAP账户", "提示"); return; }
+                var menu = new ContextMenuStrip();
+                foreach (var acc in accounts)
+                {
+                    var item = menu.Items.Add(acc.Email);
+                    item.Click += (sender, args) =>
+                    {
+                        txtImapEmlEmail.Text = acc.Email;
+                        txtImapEmlPassword.Text = acc.Password;
+                        txtImapEmlHost.Text = acc.Host;
+                        numImapEmlPort.Value = acc.Port;
+                        chkImapEmlSsl.Checked = acc.UseSsl;
+                    };
+                }
+                menu.Show(btnLoadImapEmlAccount, new Point(0, btnLoadImapEmlAccount.Height));
+            };
+            panel.Controls.Add(btnLoadImapEmlAccount);
             yPos += 30;
 
             var lblPassword = new Label { Text = "密码/授权码:", Location = new Point(20, yPos), AutoSize = true };
@@ -3178,6 +3200,8 @@ namespace MailConverter
                         txtImapHost.Text = acc.Host;
                         numImapPort.Value = acc.Port;
                         chkImapSsl.Checked = acc.UseSsl;
+                        // 自动填充文件名
+                        txtImapFileName.Text = acc.Email.Split('@')[0];
                     };
                 }
                 menu.Show(btnLoadImapAccount, new Point(0, btnLoadImapAccount.Height));
@@ -3312,7 +3336,7 @@ namespace MailConverter
             txtImapFileName = new TextBox();
             txtImapFileName.Location = new Point(120, yPos - 3);
             txtImapFileName.Size = new Size(200, 23);
-            txtImapFileName.Text = "imap_backup";
+            txtImapFileName.Text = DateTime.Now.ToString("yyyy-MM-dd");
             panel.Controls.Add(txtImapFileName);
 
             var lblMaxEmails = new Label { Text = "最大邮件数:", Location = new Point(330, yPos), AutoSize = true };
@@ -20888,14 +20912,14 @@ namespace MailConverter
                 File.AppendAllText(dbgPath, $"[{DateTime.Now:HH:mm:ss.fff}] folders={selectedFolders.Count}, years={startYear}-{endYear}\n");
 
                 // 如果勾选了下载最近N天，则覆盖startDate
-                if (chkImapFetchDaysLimit != null && chkImapFetchDaysLimit.Checked && numImapFetchDaysBack != null)
+                bool useDaysLimit = chkImapFetchDaysLimit != null && chkImapFetchDaysLimit.Checked && numImapFetchDaysBack != null && numImapFetchDaysBack.Value > 0;
+                File.AppendAllText(dbgPath, $"[{DateTime.Now:HH:mm:ss.fff}] useDaysLimit={useDaysLimit}, daysBack={numImapFetchDaysBack?.Value}\n");
+
+                if (useDaysLimit)
                 {
                     int daysBack = (int)numImapFetchDaysBack.Value;
-                    if (daysBack > 0)
-                    {
-                        startDate = DateTime.Now.AddDays(-daysBack);
-                        Log($"将收取最近 {daysBack} 天的邮件 (从 {startDate:yyyy-MM-dd} 至今)...", "IMAP2PST");
-                    }
+                    startDate = DateTime.Now.AddDays(-daysBack);
+                    Log($"将收取最近 {daysBack} 天的邮件 (从 {startDate:yyyy-MM-dd} 至今)...", "IMAP2PST");
                 }
                 else
                 {
