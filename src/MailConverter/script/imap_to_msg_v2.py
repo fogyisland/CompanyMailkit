@@ -10,7 +10,8 @@ import email as email_module
 import time
 import re
 from email.header import decode_header
-from email.utils import parseaddr, getaddresses
+from email.utils import parseaddr, getaddresses, parsedate_to_datetime
+from datetime import timezone
 
 # 1. 环境编码与控制台支持
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
@@ -113,6 +114,16 @@ def process_single_email(client, outlook, uid, folder_path):
             elif priority == '5':
                 importance_val = 0  # Low
             mail_item.Importance = importance_val
+        except: pass
+
+        # 设置发送时间
+        try:
+            date_str = raw_msg.get('date', '')
+            if date_str:
+                dt = parsedate_to_datetime(date_str)
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=timezone.utc)
+                mail_item.SentOn = dt.replace(tzinfo=None)
         except: pass
 
         # 先保存邮件，确保基础属性已设置
