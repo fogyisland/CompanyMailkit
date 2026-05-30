@@ -104,6 +104,17 @@ def process_single_email(client, outlook, uid, folder_path):
                 mail_item.BCC = "; ".join(bcc_list)
         except: pass
 
+        # 设置优先级
+        try:
+            priority = raw_msg.get('x-priority', '')
+            importance_val = 1  # Normal
+            if priority in ['1', '2']:
+                importance_val = 2  # High
+            elif priority == '5':
+                importance_val = 0  # Low
+            mail_item.Importance = importance_val
+        except: pass
+
         # 先保存邮件，确保基础属性已设置
         mail_item.Save()
 
