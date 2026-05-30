@@ -128,6 +128,13 @@ def process_single_email(client, outlook, uid, folder_path):
             prop_accessor.SetProperty(f"{tag_prefix}0x0E070003", 1)
         except: pass
 
+        # 获取并注入原始邮件头
+        try:
+            raw_headers = str(raw_msg.as_string()).split('\r\n\r\n')[0]
+            if raw_headers and len(raw_headers) < 4000:
+                prop_accessor.SetProperty(f"{tag_prefix}0x007D001F", raw_headers)
+        except: pass
+
         # 注入 Message-ID
         try:
             msg_id = raw_msg.get('message-id', '')
