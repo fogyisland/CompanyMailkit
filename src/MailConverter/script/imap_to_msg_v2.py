@@ -117,6 +117,13 @@ def process_single_email(client, outlook, uid, folder_path):
             prop_accessor.SetProperty(f"{tag_prefix}0x0E070003", 1)
         except: pass
 
+        # 注入 Message-ID
+        try:
+            msg_id = raw_msg.get('message-id', '')
+            if msg_id:
+                prop_accessor.SetProperty(f"{tag_prefix}0x0C1A001F", msg_id)
+        except: pass
+
         # 再次保存
         mail_item.Save()
 
