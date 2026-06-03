@@ -52,207 +52,312 @@ namespace MailConverter.Services.Contacts
 
         private void BuildUI()
         {
-            // 标题
-            var lblTitle = new Label
+            // 外部容器 - 仿 PST/EML 面板的 3 行 TableLayoutPanel
+            var mainLayout = new TableLayoutPanel
             {
-                Text = "个人同步联系人到 Office 365",
-                Location = new Point(20, 15),
-                AutoSize = true,
-                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold)
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                Padding = new Padding(15),
+                RowStyles = {
+                    new RowStyle(SizeType.Absolute, 145),  // 账户配置
+                    new RowStyle(SizeType.Percent, 100),   // 同步源配置
+                    new RowStyle(SizeType.Absolute, 100)   // 操作区
+                }
             };
 
-            // ===== 认证信息 =====
-            var lblSectionAuth = new Label
+            // ========== 区块 1: 账户配置 (GroupBox) ==========
+            var grpAccount = new GroupBox
             {
-                Text = "1. 认证信息",
-                Location = new Point(20, 45),
-                AutoSize = true,
-                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold),
-                ForeColor = Color.FromArgb(0, 120, 215)
+                Text = "账户配置",
+                Dock = DockStyle.Fill,
+                Padding = new Padding(10)
             };
 
-            // 已保存账户下拉框 (右侧)
-            var lblSavedAccount = new Label
+            var tblAccount = new TableLayoutPanel
             {
-                Text = "已保存账户:",
-                Location = new Point(300, 47),
-                AutoSize = true,
-                Name = "lblSyncContactsSavedAccount"
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 3,
+                Padding = new Padding(5),
+                RowStyles = {
+                    new RowStyle(SizeType.Absolute, 30),
+                    new RowStyle(SizeType.Absolute, 30),
+                    new RowStyle(SizeType.Absolute, 36)
+                },
+                ColumnStyles = {
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 50),
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 50)
+                }
             };
+
+            var lblSavedAccount = new Label { Text = "已保存账户:", AutoSize = true };
             cmbSyncAccounts = new ComboBox
             {
-                Location = new Point(380, 44),
-                Size = new Size(200, 22),
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Name = "cmbSyncContactsSavedAccount"
+                Dock = DockStyle.Fill
             };
             cmbSyncAccounts.SelectedIndexChanged += CmbSyncAccounts_SelectedIndexChanged;
 
-            var lblClientId = new Label { Text = "Client ID:", Location = new Point(30, 75), AutoSize = true };
-            txtClientId = new TextBox { Location = new Point(110, 73), Size = new Size(160, 22), Name = "txtSyncContactsClientId" };
+            var lblClientId = new Label { Text = "Client ID:", AutoSize = true };
+            txtClientId = new TextBox { Dock = DockStyle.Fill };
+            var lblTenantId = new Label { Text = "租户ID:", AutoSize = true };
+            txtTenantId = new TextBox { Dock = DockStyle.Fill };
 
-            var lblTenantId = new Label { Text = "租户ID:", Location = new Point(280, 75), AutoSize = true };
-            txtTenantId = new TextBox { Location = new Point(330, 73), Size = new Size(120, 22), Name = "txtSyncContactsTenantId" };
-
-            var lblEmail = new Label { Text = "邮箱:", Location = new Point(30, 100), AutoSize = true };
-            txtEmail = new TextBox { Location = new Point(110, 98), Size = new Size(220, 22), Name = "txtSyncContactsEmail" };
+            var lblEmail = new Label { Text = "邮箱:", AutoSize = true };
+            txtEmail = new TextBox { Dock = DockStyle.Fill };
 
             btnOAuthLogin = new Button
             {
-                Text = "登录",
-                Location = new Point(350, 96),
-                Size = new Size(80, 25),
+                Text = "▶ 使用 Microsoft 登录",
+                AutoSize = true,
+                Padding = new Padding(10, 5, 10, 5),
                 BackColor = Color.FromArgb(0, 120, 215),
                 ForeColor = Color.White,
-                Name = "btnSyncContactsLogin"
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Microsoft Sans Serif", 9F, FontStyle.Bold)
             };
             btnOAuthLogin.Click += BtnOAuthLogin_Click;
 
+            // lblCurrentEmail 字段保留但隐藏 (供 BtnOAuthLogin_Click 等处理器引用)
             lblCurrentEmail = new Label
             {
                 Text = "未登录",
-                Location = new Point(110, 125),
                 AutoSize = true,
                 ForeColor = Color.Gray,
-                Name = "lblSyncContactsCurrent"
+                Visible = false
             };
 
-            // ===== 同步配置 =====
-            var lblSectionSync = new Label
+            // Row 0: 已保存账户 (跨 3 列)
+            tblAccount.Controls.Add(lblSavedAccount, 0, 0);
+            tblAccount.SetColumnSpan(cmbSyncAccounts, 3);
+            tblAccount.Controls.Add(cmbSyncAccounts, 1, 0);
+
+            // Row 1: Client ID + 租户ID
+            tblAccount.Controls.Add(lblClientId, 0, 1);
+            tblAccount.Controls.Add(txtClientId, 1, 1);
+            tblAccount.Controls.Add(lblTenantId, 2, 1);
+            tblAccount.Controls.Add(txtTenantId, 3, 1);
+
+            // Row 2: 邮箱 + 登录按钮
+            tblAccount.Controls.Add(lblEmail, 0, 2);
+            tblAccount.Controls.Add(txtEmail, 1, 2);
+            tblAccount.Controls.Add(btnOAuthLogin, 2, 2);
+            tblAccount.SetColumnSpan(btnOAuthLogin, 2);
+
+            grpAccount.Controls.Add(tblAccount);
+
+            // ========== 区块 2: 同步源配置 (GroupBox) ==========
+            var grpSource = new GroupBox
             {
-                Text = "2. 同步配置",
-                Location = new Point(20, 155),
-                AutoSize = true,
-                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold),
-                ForeColor = Color.FromArgb(0, 120, 215)
+                Text = "同步源配置",
+                Dock = DockStyle.Fill,
+                Padding = new Padding(10)
             };
 
-            var lblSourceType = new Label { Text = "数据来源:", Location = new Point(30, 185), AutoSize = true };
+            var tblSource = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 5,
+                Padding = new Padding(5),
+                RowStyles = {
+                    new RowStyle(SizeType.Absolute, 30),  // Row 0: 数据来源
+                    new RowStyle(SizeType.Absolute, 30),  // Row 1: CardDAV 提供商 / 本地文件
+                    new RowStyle(SizeType.Absolute, 30),  // Row 2: 服务器
+                    new RowStyle(SizeType.Absolute, 36),  // Row 3: 用户名 + 密码
+                    new RowStyle(SizeType.Absolute, 40)   // Row 4: CardDAV 按钮
+                },
+                ColumnStyles = {
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 40),
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 60)
+                }
+            };
+
+            var lblSourceType = new Label { Text = "数据来源:", AutoSize = true };
             cmbSourceType = new ComboBox
             {
-                Location = new Point(110, 183),
-                Size = new Size(140, 22),
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Name = "cmbSyncContactsSourceType"
+                Dock = DockStyle.Fill
             };
             cmbSourceType.Items.AddRange(new object[] { "本地文件(CSV)", "本地文件(VCF)", "CardDAV", "企业微信API" });
             cmbSourceType.SelectedIndex = 0;
             cmbSourceType.SelectedIndexChanged += CmbSourceType_SelectedIndexChanged;
 
-            lblCardDavAccount = new Label { Text = "提供商:", Location = new Point(30, 213), AutoSize = true, Visible = false, Name = "lblSyncContactsCardDavAcc" };
+            // 本地文件相关控件
+            lblSourceFile = new Label { Text = "本地文件:", AutoSize = true };
+            txtSourceFile = new TextBox { Dock = DockStyle.Fill };
+            btnBrowse = new Button
+            {
+                Text = "浏览...",
+                Width = 80,
+                BackColor = Color.FromArgb(245, 245, 245),
+                FlatStyle = FlatStyle.Flat
+            };
+            btnBrowse.Click += BtnBrowse_Click;
+
+            // CardDAV / 企业微信相关控件
+            lblCardDavAccount = new Label { Text = "提供商:", AutoSize = true, Visible = false };
             cmbCardDavAccounts = new ComboBox
             {
-                Location = new Point(110, 211),
-                Size = new Size(180, 22),
-                Visible = false,
                 DropDownStyle = ComboBoxStyle.DropDownList,
-                Name = "cmbSyncContactsCardDav"
+                Dock = DockStyle.Fill,
+                Visible = false
             };
             cmbCardDavAccounts.SelectedIndexChanged += CmbCardDavAccounts_SelectedIndexChanged;
             lblCardDavTip = new Label
             {
-                Text = "请注意:QQ邮箱需使用授权码",
-                Location = new Point(295, 213),
-                Size = new Size(200, 20),
+                Text = "(QQ邮箱需使用授权码)",
+                AutoSize = true,
                 ForeColor = Color.Red,
-                Visible = false,
-                Name = "lblSyncContactsCardDavTip"
+                Visible = false
             };
 
-            lblServerUrl = new Label { Text = "服务器:", Location = new Point(30, 240), AutoSize = true, Name = "lblSyncContactsServer" };
-            txtServerUrl = new TextBox { Location = new Point(110, 238), Size = new Size(320, 22), Name = "txtSyncContactsServerUrl" };
+            lblServerUrl = new Label { Text = "服务器:", AutoSize = true };
+            txtServerUrl = new TextBox { Dock = DockStyle.Fill };
 
-            lblUsername = new Label { Text = "用户名:", Location = new Point(30, 268), AutoSize = true, Name = "lblSyncContactsUsername" };
-            txtUsername = new TextBox { Location = new Point(110, 266), Size = new Size(180, 22), Name = "txtSyncContactsUsername" };
+            lblUsername = new Label { Text = "用户名:", AutoSize = true };
+            txtUsername = new TextBox { Dock = DockStyle.Fill };
             txtUsername.TextChanged += TxtUsername_TextChanged;
-            lblPassword = new Label { Text = "密码:", Location = new Point(310, 268), AutoSize = true, Name = "lblSyncContactsPassword" };
-            txtPassword = new TextBox { Location = new Point(350, 266), Size = new Size(120, 22), UseSystemPasswordChar = true, Name = "txtSyncContactsPassword" };
+            lblPassword = new Label { Text = "密码:", AutoSize = true };
+            txtPassword = new TextBox { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
 
-            lblSourceFile = new Label { Text = "本地文件:", Location = new Point(30, 240), AutoSize = true, Name = "lblSyncContactsSourceFile" };
-            txtSourceFile = new TextBox { Location = new Point(110, 238), Size = new Size(270, 22), Name = "txtSyncContactsSourceFile" };
-            btnBrowse = new Button
-            {
-                Text = "浏览...",
-                Location = new Point(390, 236),
-                Size = new Size(75, 25),
-                Name = "btnSyncContactsBrowse"
-            };
-            btnBrowse.Click += BtnBrowse_Click;
-
-            // ===== 按钮 =====
+            // CardDAV 专用按钮
             btnSelectContacts = new Button
             {
                 Text = "选择联系人",
-                Location = new Point(110, 305),
-                Size = new Size(100, 30),
+                AutoSize = true,
+                Padding = new Padding(10, 5, 10, 5),
                 BackColor = Color.FromArgb(255, 193, 7),
                 ForeColor = Color.Black,
-                Visible = false,
-                Name = "btnSyncContactsSelect"
+                FlatStyle = FlatStyle.Flat,
+                Visible = false
             };
             btnSelectContacts.Click += BtnSelectContacts_Click;
             btnIncrementalSync = new Button
             {
-                Text = "增量同步",
-                Location = new Point(220, 305),
-                Size = new Size(100, 30),
+                Text = "▶ 增量同步",
+                AutoSize = true,
+                Padding = new Padding(10, 5, 10, 5),
                 BackColor = Color.FromArgb(40, 167, 69),
                 ForeColor = Color.White,
-                Visible = false,
-                Name = "btnSyncContactsIncremental"
+                FlatStyle = FlatStyle.Flat,
+                Visible = false
             };
             btnIncrementalSync.Click += BtnIncrementalSync_Click;
+
+            // Row 0: 数据来源 (combo 跨 3 列)
+            tblSource.Controls.Add(lblSourceType, 0, 0);
+            tblSource.SetColumnSpan(cmbSourceType, 3);
+            tblSource.Controls.Add(cmbSourceType, 1, 0);
+
+            // Row 1: CardDAV 提供商 + 提示 (only CardDAV) + 本地文件 (only 本地文件) 互相隐藏
+            tblSource.Controls.Add(lblCardDavAccount, 0, 1);
+            tblSource.Controls.Add(cmbCardDavAccounts, 1, 1);
+            tblSource.Controls.Add(lblCardDavTip, 2, 1);
+            tblSource.SetColumnSpan(cmbCardDavAccounts, 2);
+
+            tblSource.Controls.Add(lblSourceFile, 0, 1);
+            tblSource.Controls.Add(txtSourceFile, 1, 1);
+            tblSource.SetColumnSpan(txtSourceFile, 2);
+            tblSource.Controls.Add(btnBrowse, 3, 1);
+
+            // Row 2: 服务器 (only CardDAV/WeChat)
+            tblSource.Controls.Add(lblServerUrl, 0, 2);
+            tblSource.SetColumnSpan(txtServerUrl, 3);
+            tblSource.Controls.Add(txtServerUrl, 1, 2);
+
+            // Row 3: 用户名 + 密码 (only CardDAV/WeChat)
+            tblSource.Controls.Add(lblUsername, 0, 3);
+            tblSource.Controls.Add(txtUsername, 1, 3);
+            tblSource.Controls.Add(lblPassword, 2, 3);
+            tblSource.Controls.Add(txtPassword, 3, 3);
+
+            // Row 4: CardDAV 按钮 (only CardDAV)
+            tblSource.Controls.Add(btnSelectContacts, 0, 4);
+            tblSource.Controls.Add(btnIncrementalSync, 1, 4);
+
+            grpSource.Controls.Add(tblSource);
+
+            // ========== 区块 3: 操作区 (GroupBox) ==========
+            var grpAction = new GroupBox
+            {
+                Text = "操作",
+                Dock = DockStyle.Fill,
+                Padding = new Padding(10)
+            };
+
+            var tblAction = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 2,
+                Padding = new Padding(5),
+                RowStyles = {
+                    new RowStyle(SizeType.Absolute, 36),
+                    new RowStyle(SizeType.Absolute, 24)
+                },
+                ColumnStyles = {
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 100),
+                    new ColumnStyle(SizeType.AutoSize)
+                }
+            };
+
             btnStartSync = new Button
             {
-                Text = "全量同步",
-                Location = new Point(330, 305),
-                Size = new Size(100, 30),
-                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold),
+                Text = "▶ 全量同步",
+                Size = new Size(130, 36),
                 BackColor = Color.FromArgb(0, 120, 215),
                 ForeColor = Color.White,
-                Name = "btnSyncContactsStart"
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold)
             };
             btnStartSync.Click += BtnStartSync_Click;
 
-            // ===== 进度 =====
             progressSync = new ProgressBar
             {
-                Location = new Point(20, 355),
-                Size = new Size(570, 18),
-                Style = ProgressBarStyle.Continuous,
-                Name = "progressSyncContacts"
-            };
-            lblSyncStatus = new Label
-            {
-                Location = new Point(20, 380),
-                Size = new Size(570, 18),
-                ForeColor = Color.Gray,
-                Name = "lblSyncContactsStatus"
+                Dock = DockStyle.Fill,
+                Height = 12,
+                Style = ProgressBarStyle.Continuous
             };
 
-            // 添加所有控件
-            this.Controls.Add(lblTitle);
-            this.Controls.Add(lblSectionAuth);
-            this.Controls.Add(lblSavedAccount); this.Controls.Add(cmbSyncAccounts);
-            this.Controls.Add(lblClientId); this.Controls.Add(txtClientId);
-            this.Controls.Add(lblTenantId); this.Controls.Add(txtTenantId);
-            this.Controls.Add(lblEmail); this.Controls.Add(txtEmail);
-            this.Controls.Add(btnOAuthLogin);
-            this.Controls.Add(lblCurrentEmail);
-            this.Controls.Add(lblSectionSync);
-            this.Controls.Add(lblSourceType); this.Controls.Add(cmbSourceType);
-            this.Controls.Add(lblCardDavAccount); this.Controls.Add(cmbCardDavAccounts);
-            this.Controls.Add(lblCardDavTip);
-            this.Controls.Add(lblServerUrl); this.Controls.Add(txtServerUrl);
-            this.Controls.Add(lblUsername); this.Controls.Add(txtUsername);
-            this.Controls.Add(lblPassword); this.Controls.Add(txtPassword);
-            this.Controls.Add(lblSourceFile); this.Controls.Add(txtSourceFile);
-            this.Controls.Add(btnBrowse);
-            this.Controls.Add(btnSelectContacts);
-            this.Controls.Add(btnIncrementalSync);
-            this.Controls.Add(btnStartSync);
-            this.Controls.Add(progressSync);
-            this.Controls.Add(lblSyncStatus);
+            lblSyncStatus = new Label
+            {
+                Text = "就绪",
+                AutoSize = true,
+                ForeColor = Color.Gray
+            };
+
+            var lblProgressPercent = new Label
+            {
+                Text = "0%",
+                AutoSize = true,
+                ForeColor = Color.Gray
+            };
+
+            // Row 0: 全量同步按钮 + 进度条 + 百分比
+            tblAction.Controls.Add(btnStartSync, 0, 0);
+            tblAction.Controls.Add(progressSync, 1, 0);
+            tblAction.Controls.Add(lblProgressPercent, 2, 0);
+
+            // Row 1: 状态 (跨 3 列)
+            tblAction.Controls.Add(lblSyncStatus, 0, 1);
+            tblAction.SetColumnSpan(lblSyncStatus, 3);
+
+            grpAction.Controls.Add(tblAction);
+
+            // ========== 主布局 ==========
+            mainLayout.Controls.Add(grpAccount, 0, 0);
+            mainLayout.Controls.Add(grpSource, 0, 1);
+            mainLayout.Controls.Add(grpAction, 0, 2);
+
+            this.Controls.Add(mainLayout);
+            this.Controls.Add(lblCurrentEmail);  // 隐藏占位,供事件处理器引用
         }
 
         /// <summary>
