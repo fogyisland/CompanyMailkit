@@ -13,6 +13,8 @@ using CsvHelper;
 using CsvHelper.Configuration;
 using MimeKit;
 using Microsoft.WindowsAPICodePack.Dialogs;
+using MailConverter.Services.Contacts;
+using MailConverter.Services.Calendars;
 
 namespace MailConverter
 {
@@ -1356,17 +1358,29 @@ namespace MailConverter
 
             // EML导入子Tab
             _emlImportTab = new TabPage("EML导入");
+            var emlLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 1, ColumnCount = 1 };
             var emlImportPanel = CreateOffice365Panel();
             emlImportPanel.Dock = DockStyle.Fill;
-            _emlImportTab.Controls.Add(emlImportPanel);
+            emlLayout.Controls.Add(emlImportPanel, 0, 0);
+            _emlImportTab.Controls.Add(emlLayout);
+
+            // PST导入子Tab - 复用EML导入界面
+            var pstImportTabSingle = new TabPage("PST导入");
+            var pstLayout = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 1, ColumnCount = 1 };
+            var pstImportPanelSingle = CreateOffice365PanelForPst();
+            pstImportPanelSingle.Dock = DockStyle.Fill;
+            pstLayout.Controls.Add(pstImportPanelSingle, 0, 0);
+            pstImportTabSingle.Controls.Add(pstLayout);
 
             // 同步联系人/日历子Tab
             _syncTab = new TabPage("同步联系人/日历");
             var syncPanel = CreateSyncContactsCalendarPanel();
+            syncPanel.Dock = DockStyle.Fill;
             _syncTab.Controls.Add(syncPanel);
 
             // 添加子Tab到嵌套TabControl
             _o365NestedTabControl.TabPages.Add(_emlImportTab);
+            _o365NestedTabControl.TabPages.Add(pstImportTabSingle);
             _o365NestedTabControl.TabPages.Add(_syncTab);
 
             // 设置子Tab可见性
@@ -4255,281 +4269,557 @@ namespace MailConverter
 
         private Panel CreateOffice365Panel()
         {
-            var panel = new Panel { Dock = DockStyle.Fill };
+            var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(15), Name = "EMLO365Panel" };
 
-            // 标题
-            var lblTitle = new Label
+            // 主容器: 固定行高确保布局稳定
+            var mainLayout = new TableLayoutPanel
             {
-                Text = "将邮件导入到 Office 365 / Exchange",
-                Location = new Point(20, 15),
-                AutoSize = true,
-                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold)
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                RowStyles = {
+                    new RowStyle(SizeType.Absolute, 150),  // 用户配置区 - 固定高度
+                    new RowStyle(SizeType.Percent, 100),   // 源文件区 - 填满
+                    new RowStyle(SizeType.Absolute, 80)    // 操作区 - 固定高度
+                }
             };
 
-            // 分隔线
-            var separator1 = new Label
+            // ========== 区块1: 账户配置 (GroupBox) ==========
+            var grpAccount = new GroupBox
             {
-                Location = new Point(20, 45),
-                Size = new Size(570, 1),
-                BackColor = Color.LightGray
+                Text = "用户配置信息",
+                Dock = DockStyle.Fill,
+                Padding = new Padding(10)
             };
 
-            // Office 365 目标账户
-            var lblO365Target = new Label
+            // 布局: 4列 x 3行
+            // Row 0: 选择账户 + 管理员账户
+            // Row 1: Client ID + 租户ID
+            // Row 2: 登录按钮(左对齐)
+            var tblAccount = new TableLayoutPanel
             {
-                Text = "Office 365 目标账户",
-                Location = new Point(20, 55),
-                AutoSize = true,
-                ForeColor = Color.Blue,
-                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold)
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 3,
+                Padding = new Padding(5),
+                RowStyles = {
+                    new RowStyle(SizeType.Absolute, 30),
+                    new RowStyle(SizeType.Absolute, 30),
+                    new RowStyle(SizeType.Absolute, 36)
+                },
+                ColumnStyles = {
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 50),
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 50)
+                }
             };
 
-            // 个人账户选择 - 从首选项中读取
-            var lblO365Account = new Label { Text = "个人账户:", Location = new Point(30, 85), AutoSize = true };
-            cmbO365SavedAccounts = new ComboBox();
-            cmbO365SavedAccounts.Location = new Point(120, 83);
-            cmbO365SavedAccounts.Size = new Size(250, 25);
-            cmbO365SavedAccounts.DropDownStyle = ComboBoxStyle.DropDownList;
+            var lblAccount = new Label { Text = "选择账户:", AutoSize = true };
+            cmbO365SavedAccounts = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Width = 160
+            };
             cmbO365SavedAccounts.Items.Add("-- 选择账户 --");
             cmbO365SavedAccounts.SelectedIndex = 0;
             cmbO365SavedAccounts.SelectedIndexChanged += CmbO365SavedAccounts_SelectedIndexChanged;
 
-            // 加载已保存的账户
-            LoadSavedOAuthAccounts();
-
-            // 认证方式 (已隐藏，仅用于内部逻辑)
-            cmbO365AuthType = new ComboBox();
-            cmbO365AuthType.Items.AddRange(new object[] { "OAuth 2.0" });
-            cmbO365AuthType.SelectedIndex = 0;
-            cmbO365AuthType.Visible = false;
-
-            // 用户名密码认证 UI (已禁用，仅保留字段定义)
-            lblO365Email = new Label { Text = "邮箱:", Location = new Point(30, 120), AutoSize = true, Name = "lblEmail", Visible = true };
-            txtO365Email = new TextBox();
-            txtO365Email.Location = new Point(100, 118);
-            txtO365Email.Size = new Size(280, 25);
-            txtO365Email.Name = "txtEmail";
-
-            lblO365Pwd = new Label { Text = "密码:", Location = new Point(30, 155), AutoSize = true, Name = "lblPwd", Visible = false };
-            txtO365Password = new TextBox();
-            txtO365Password.Location = new Point(100, 153);
-            txtO365Password.Size = new Size(180, 25);
-            txtO365Password.UseSystemPasswordChar = true;
-            txtO365Password.Name = "txtPwd";
-            txtO365Password.Visible = false;
-
-            lblO365Dom = new Label { Text = "域:", Location = new Point(290, 155), AutoSize = true, Name = "lblDom", Visible = false };
-            txtO365Domain = new TextBox();
-            txtO365Domain.Location = new Point(330, 153);
-            txtO365Domain.Size = new Size(100, 25);
-            txtO365Domain.Name = "txtDom";
-            txtO365Domain.Visible = false;
-
-            btnO365Test = new Button();
-            btnO365Test.Location = new Point(450, 151);
-            btnO365Test.Size = new Size(80, 25);
-            btnO365Test.Text = "测试连接";
-            btnO365Test.Click += BtnO365Test_Click;
-            btnO365Test.Visible = false;
-
-            // OAuth2 UI - Client ID 和租户 ID 并排显示 (默认显示)
-            lblO365ClientId = new Label { Text = "Client ID:", Location = new Point(30, 155), AutoSize = true, Name = "lblClientId", Visible = true };
-            txtO365ClientId = new TextBox();
-            txtO365ClientId.Location = new Point(100, 153);
-            txtO365ClientId.Size = new Size(200, 25);
-            txtO365ClientId.Visible = true;
-            txtO365ClientId.Name = "txtClientId";
-
-            lblO365TenantId = new Label { Text = "租户ID:", Location = new Point(310, 155), AutoSize = true, Name = "lblTenantId", Visible = true };
-            txtO365TenantId = new TextBox();
-            txtO365TenantId.Location = new Point(370, 153);
-            txtO365TenantId.Size = new Size(160, 25);
-            txtO365TenantId.Visible = true;
-            txtO365TenantId.Name = "txtTenantId";
-
-            var lblTenantHint = new Label { Text = "(留空使用/common)", Location = new Point(100, 178), AutoSize = true, ForeColor = Color.Gray, Name = "lblTenantHint", Visible = true };
-
-            btnO365OAuthLogin = new Button();
-            btnO365OAuthLogin.Location = new Point(310, 178);
-            btnO365OAuthLogin.Size = new Size(140, 30);
-            btnO365OAuthLogin.Text = "使用 Microsoft 登录";
-            btnO365OAuthLogin.Visible = true;
-            btnO365OAuthLogin.BackColor = Color.FromArgb(0, 120, 215);
-            btnO365OAuthLogin.ForeColor = Color.White;
-            btnO365OAuthLogin.Click += BtnO365OAuthLogin_Click;
-
-            // 关闭监听器按钮
-            var btnO365CloseListener = new Button();
-            btnO365CloseListener.Location = new Point(455, 178);
-            btnO365CloseListener.Size = new Size(75, 30);
-            btnO365CloseListener.Text = "关闭端口";
-            btnO365CloseListener.Visible = false;
-            btnO365CloseListener.Name = "btnO365CloseListener";
-            btnO365CloseListener.Click += (s, e) => CloseO365Listener();
-
-            // 分隔线2
-            var separator2 = new Label
+            var lblAdminAccount = new Label { Text = "管理员账户:", AutoSize = true };
+            var txtO365AdminAccount = new TextBox
             {
-                Location = new Point(20, 195),
-                Size = new Size(570, 1),
-                BackColor = Color.LightGray
+                Width = 160,
+                ReadOnly = false,
+                Name = "txtO365AdminAccount"
             };
 
-            // 源类型
-            var lblSourceType = new Label { Text = "邮件来源:", Location = new Point(20, 210), AutoSize = true };
-            cmbO365SourceType = new ComboBox();
-            cmbO365SourceType.Location = new Point(100, 208);
-            cmbO365SourceType.Size = new Size(200, 25);
-            cmbO365SourceType.DropDownStyle = ComboBoxStyle.DropDownList;
-            cmbO365SourceType.Items.AddRange(new object[] { "EML 文件夹", "PST 文件" });
+            var lblClientId = new Label { Text = "Client ID:", AutoSize = true };
+            txtO365ClientId = new TextBox { Width = 160, Name = "txtO365ClientId" };
+            var lblTenantId = new Label { Text = "租户ID:", AutoSize = true };
+            txtO365TenantId = new TextBox { Width = 160, Name = "txtO365TenantId" };
+            btnO365OAuthLogin = new Button
+            {
+                Text = "使用 Microsoft 登录",
+                AutoSize = true,
+                Padding = new Padding(10, 5, 10, 5),
+                BackColor = Color.FromArgb(0, 120, 215),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Microsoft Sans Serif", 9F, FontStyle.Bold),
+                Name = "btnO365OAuthLogin",
+                Tag = "EML"
+            };
+            btnO365OAuthLogin.Click += BtnO365OAuthLogin_Click;
+            cmbO365AuthType = new ComboBox { Visible = false };
+            cmbO365AuthType.Items.AddRange(new object[] { "OAuth 2.0" });
+            cmbO365AuthType.SelectedIndex = 0;
+
+            // Row 0: 选择账户 + 管理员账户(可手动输入)
+            tblAccount.Controls.Add(lblAccount, 0, 0);
+            tblAccount.Controls.Add(cmbO365SavedAccounts, 1, 0);
+            tblAccount.Controls.Add(lblAdminAccount, 2, 0);
+            tblAccount.Controls.Add(txtO365AdminAccount, 3, 0);
+
+            // Row 1: Client ID + 租户ID
+            tblAccount.Controls.Add(lblClientId, 0, 1);
+            tblAccount.Controls.Add(txtO365ClientId, 1, 1);
+            tblAccount.Controls.Add(lblTenantId, 2, 1);
+            tblAccount.Controls.Add(txtO365TenantId, 3, 1);
+
+            // Row 2: 登录按钮(左对齐)
+            tblAccount.Controls.Add(btnO365OAuthLogin, 0, 2);
+
+            grpAccount.Controls.Add(tblAccount);
+            mainLayout.Controls.Add(grpAccount, 0, 0);
+
+            // ========== 区块2: 源文件配置 (GroupBox) - 填满中间区域 ==========
+            var grpSource = new GroupBox
+            {
+                Text = "EML 邮件导入",
+                Dock = DockStyle.Fill,
+                Padding = new Padding(10)
+            };
+
+            var tblSource = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 2,
+                Padding = new Padding(5),
+                RowStyles = {
+                    new RowStyle(SizeType.AutoSize),
+                    new RowStyle(SizeType.AutoSize)
+                },
+                ColumnStyles = {
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 35),
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 65)
+                }
+            };
+
+            var lblSourceType = new Label { Text = "邮件来源:", AutoSize = true };
+            cmbO365SourceType = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Width = 120,
+                Name = "cmbO365SourceType"
+            };
+            cmbO365SourceType.Items.AddRange(new object[] { "EML 文件夹" });
             cmbO365SourceType.SelectedIndex = 0;
             cmbO365SourceType.SelectedIndexChanged += CmbO365SourceType_SelectedIndexChanged;
 
-            // 源路径
-            var lblSource = new Label { Text = "源路径:", Location = new Point(30, 250), AutoSize = true };
-            txtO365SourcePath = new TextBox();
-            txtO365SourcePath.Location = new Point(100, 248);
-            txtO365SourcePath.Size = new Size(350, 25);
+            var lblTargetFolder = new Label { Text = "目标文件夹:", AutoSize = true };
+            cmbO365TargetFolder = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDown,
+                Width = 120,
+                Name = "cmbO365TargetFolder"
+            };
+            cmbO365TargetFolder.Items.AddRange(new object[] { "Inbox", "Sent Items", "Drafts", "Deleted Items" });
+            cmbO365TargetFolder.Text = "";
 
-            btnO365SourceBrowse = new Button();
-            btnO365SourceBrowse.Location = new Point(460, 246);
-            btnO365SourceBrowse.Size = new Size(80, 25);
-            btnO365SourceBrowse.Text = "浏览...";
+            var lblSource = new Label { Text = "源路径:", AutoSize = true };
+            txtO365SourcePath = new TextBox { Width = 300, Name = "txtO365SourcePath" };
+            btnO365SourceBrowse = new Button
+            {
+                Text = "浏览...",
+                Width = 70,
+                BackColor = Color.FromArgb(245, 245, 245),
+                FlatStyle = FlatStyle.Flat
+            };
             btnO365SourceBrowse.Click += BtnO365SourceBrowse_Click;
 
-            // PST导入方式选择 (仅PST文件时显示)
-            var lblPstMethod = new Label { Text = "PST导入方式:", Location = new Point(30, 275), AutoSize = true, Visible = false, Name = "lblPstMethod" };
-            radO365PstExtract = new RadioButton
-            {
-                Text = "提取为EML后导入",
-                Location = new Point(120, 275),
-                Size = new Size(150, 20),
-                Visible = false,
-                Checked = true,
-                Name = "radPstExtract"
-            };
-            radO365PstDirect = new RadioButton
-            {
-                Text = "EWS直接上传",
-                Location = new Point(280, 275),
-                Size = new Size(150, 20),
-                Visible = false,
-                Name = "radPstDirect"
-            };
+            var lblPstMethod = new Label { Text = "PST导入方式:", AutoSize = true, Visible = false, Name = "lblPstMethod" };
+            radO365PstExtract = new RadioButton { Text = "提取为EML后导入", Visible = false, Checked = true };
+            radO365PstDirect = new RadioButton { Text = "EWS直接上传", Visible = false };
+            var lblPstNote = new Label { Text = "注意: PST导入需要开启Outlook", ForeColor = Color.Red, Visible = false, Name = "lblPstNote" };
 
-            // PST导入注意事项
-            var lblPstNote = new Label
+            tblSource.Controls.Add(lblSourceType, 0, 0);
+            tblSource.Controls.Add(cmbO365SourceType, 1, 0);
+            tblSource.Controls.Add(lblTargetFolder, 2, 0);
+            tblSource.Controls.Add(cmbO365TargetFolder, 3, 0);
+            tblSource.Controls.Add(lblSource, 0, 1);
+            tblSource.Controls.Add(txtO365SourcePath, 1, 1);
+            tblSource.Controls.Add(btnO365SourceBrowse, 2, 1);
+            tblSource.Controls.Add(lblPstMethod, 0, 1);
+            tblSource.Controls.Add(radO365PstExtract, 1, 1);
+            tblSource.Controls.Add(radO365PstDirect, 2, 1);
+            tblSource.Controls.Add(lblPstNote, 3, 1);
+
+            grpSource.Controls.Add(tblSource);
+            mainLayout.Controls.Add(grpSource, 0, 1);
+
+            // ========== 区块3: 操作区 (GroupBox) ==========
+            var grpAction = new GroupBox
             {
-                Text = "注意: PST导入需要开启Outlook",
-                Location = new Point(30, 295),
-                Size = new Size(250, 20),
-                ForeColor = Color.Red,
-                Visible = false,
-                Name = "lblPstNote"
+                Text = "导入进度",
+                Dock = DockStyle.Top,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(10)
             };
 
-            // 目标文件夹
-            var lblTargetFolder = new Label { Text = "目标文件夹:", Location = new Point(30, 320), AutoSize = true };
-            cmbO365TargetFolder = new ComboBox();
-            cmbO365TargetFolder.Location = new Point(120, 318);
-            cmbO365TargetFolder.Size = new Size(180, 25);
-            cmbO365TargetFolder.DropDownStyle = ComboBoxStyle.DropDown;
-            cmbO365TargetFolder.Items.AddRange(new object[] { "Inbox", "Sent Items", "Drafts", "Deleted Items" });
-            cmbO365TargetFolder.Text = "Inbox";
-
-            // 分隔线3
-            var separator3 = new Label
+            var tblAction = new TableLayoutPanel
             {
-                Location = new Point(20, 355),
-                Size = new Size(570, 1),
-                BackColor = Color.LightGray
-            };
-
-            // 导入按钮
-            btnO365Import = new Button();
-            btnO365Import.Location = new Point(200, 365);
-            btnO365Import.Size = new Size(120, 40);
-            btnO365Import.Text = "开始导入";
-            btnO365Import.Font = new Font(btnO365Import.Font, FontStyle.Bold);
-            btnO365Import.BackColor = Color.FromArgb(0, 120, 215);
-            btnO365Import.ForeColor = Color.White;
-            btnO365Import.Click += (s, e) => BtnO365Import_Click(cmbO365TargetFolder.Text);
-
-            // 分隔线4 - 同步功能区
-            var separator4 = new Label
-            {
-                Location = new Point(20, 420),
-                Size = new Size(570, 1),
-                BackColor = Color.LightGray
-            };
-
-            // 同步功能标题
-            var lblSyncTitle = new Label
-            {
-                Text = "同步功能",
-                Location = new Point(20, 430),
+                Dock = DockStyle.Top,
+                ColumnCount = 1,
+                RowCount = 2,
                 AutoSize = true,
-                ForeColor = Color.Blue,
-                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold)
+                Padding = new Padding(5),
+                RowStyles = {
+                    new RowStyle(SizeType.AutoSize),
+                    new RowStyle(SizeType.Percent, 100)
+                }
             };
 
-            // 进度条
-            progressO365 = new ProgressBar();
-            progressO365.Location = new Point(20, 510);
-            progressO365.Size = new Size(570, 20);
-            progressO365.Style = ProgressBarStyle.Continuous;
-
-            // 状态
-            lblO365Status = new Label();
-            lblO365Status.Location = new Point(20, 540);
-            lblO365Status.Size = new Size(570, 20);
-            lblO365Status.ForeColor = Color.Gray;
-
-            // 说明
-            var lblNote = new Label
+            // 第一行：按钮 + 进度条 + 状态标签
+            var topRow = new TableLayoutPanel
             {
-                Text = "说明: EML文件夹 - 选择包含.eml文件的文件夹 | PST文件 - 选择PST文件自动提取并导入",
-                Location = new Point(20, 540),
-                Size = new Size(570, 20),
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                Padding = new Padding(5),
+                ColumnStyles = {
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 100),
+                    new ColumnStyle(SizeType.AutoSize)
+                }
+            };
+
+            btnO365Import = new Button
+            {
+                Text = "▶ 开始导入",
+                Size = new Size(130, 36),
+                BackColor = Color.FromArgb(0, 120, 215),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold),
+                Tag = "EML",
+                Name = "btnO365Import"
+            };
+            btnO365Import.Click += (s, ev) => BtnO365Import_Click(s, ev, cmbO365TargetFolder.Text);
+
+            progressO365 = new ProgressBar
+            {
+                Dock = DockStyle.Fill,
+                Height = 12,
+                Style = ProgressBarStyle.Continuous,
+                Name = "progressO365"
+            };
+            var lblProgressPercent = new Label
+            {
+                Name = "lblProgressPercent",
+                Text = "0%",
+                AutoSize = true,
                 ForeColor = Color.Gray
             };
+            lblO365Status = new Label
+            {
+                Text = "就绪",
+                AutoSize = true,
+                ForeColor = Color.Gray,
+                Name = "lblO365Status"
+            };
 
-            panel.Controls.Add(lblTitle);
-            panel.Controls.Add(separator1);
-            panel.Controls.Add(lblO365Target);
-            panel.Controls.Add(lblO365Account);
-            panel.Controls.Add(cmbO365SavedAccounts);
-            panel.Controls.Add(lblO365Email);
-            panel.Controls.Add(txtO365Email);
-            panel.Controls.Add(lblO365Pwd);
-            panel.Controls.Add(txtO365Password);
-            panel.Controls.Add(lblO365Dom);
-            panel.Controls.Add(txtO365Domain);
-            panel.Controls.Add(lblO365ClientId);
-            panel.Controls.Add(txtO365ClientId);
-            panel.Controls.Add(lblO365TenantId);
-            panel.Controls.Add(txtO365TenantId);
-            panel.Controls.Add(btnO365OAuthLogin);
-            panel.Controls.Add(btnO365CloseListener);
-            panel.Controls.Add(btnO365Test);
-            panel.Controls.Add(separator2);
-            panel.Controls.Add(lblSourceType);
-            panel.Controls.Add(cmbO365SourceType);
-            panel.Controls.Add(lblSource);
-            panel.Controls.Add(txtO365SourcePath);
-            panel.Controls.Add(btnO365SourceBrowse);
-            panel.Controls.Add(lblPstMethod);
-            panel.Controls.Add(radO365PstExtract);
-            panel.Controls.Add(radO365PstDirect);
-            panel.Controls.Add(lblPstNote);
-            panel.Controls.Add(lblTargetFolder);
-            panel.Controls.Add(cmbO365TargetFolder);
-            panel.Controls.Add(separator3);
-            panel.Controls.Add(btnO365Import);
-            panel.Controls.Add(progressO365);
-            panel.Controls.Add(lblO365Status);
-            panel.Controls.Add(lblNote);
+            topRow.Controls.Add(btnO365Import, 0, 0);
+            topRow.Controls.Add(progressO365, 1, 0);
+            topRow.Controls.Add(lblProgressPercent, 2, 0);
 
+            // 第二行：日志框 (第一行是状态标签，第二行是日志)
+            var statusRow = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 1
+            };
+            statusRow.Controls.Add(lblO365Status, 0, 0);
+
+            var txtO365ImportLog = new TextBox
+            {
+                Name = "txtO365ImportLog",
+                Dock = DockStyle.Fill,
+                Multiline = true,
+                ReadOnly = true,
+                Height = 120,
+                ScrollBars = ScrollBars.Vertical,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.LightGreen,
+                Font = new Font("Consolas", 9F)
+            };
+
+            tblAction.Controls.Add(topRow, 0, 0);
+            tblAction.Controls.Add(statusRow, 0, 1);
+            tblAction.Controls.Add(txtO365ImportLog, 0, 2);
+
+            grpAction.Controls.Add(tblAction);
+            mainLayout.Controls.Add(grpAction, 0, 2);
+
+            panel.Controls.Add(mainLayout);
+
+            LoadSavedOAuthAccounts();
+            return panel;
+        }
+
+        /// <summary>
+        /// PST导入页面 - 与EML导入相同的简洁结构
+        /// </summary>
+        private Panel CreateOffice365PanelForPst()
+        {
+            var panel = new Panel { Dock = DockStyle.Fill, Padding = new Padding(15), Name = "PSTO365Panel" };
+
+            // 主容器: 固定行高确保布局稳定
+            var mainLayout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 3,
+                RowStyles = {
+                    new RowStyle(SizeType.Absolute, 150),  // 用户配置区 - 固定高度
+                    new RowStyle(SizeType.Percent, 100),   // 源文件区 - 填满
+                    new RowStyle(SizeType.Absolute, 80)    // 操作区 - 固定高度
+                }
+            };
+
+            // ========== 区块1: 账户配置 (GroupBox) ==========
+            var grpAccount = new GroupBox
+            {
+                Text = "用户配置信息",
+                Dock = DockStyle.Fill,
+                Padding = new Padding(10)
+            };
+
+            // 布局: 4列 x 3行
+            // Row 0: 选择账户 + 管理员账户
+            // Row 1: Client ID + 租户ID
+            // Row 2: 登录按钮(左对齐)
+            var tblAccount = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 3,
+                Padding = new Padding(5),
+                RowStyles = {
+                    new RowStyle(SizeType.Absolute, 30),
+                    new RowStyle(SizeType.Absolute, 30),
+                    new RowStyle(SizeType.Absolute, 36)
+                },
+                ColumnStyles = {
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 50),
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 50)
+                }
+            };
+
+            var lblAccount = new Label { Text = "选择账户:", AutoSize = true };
+            cmbO365SavedAccounts = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Width = 160
+            };
+            cmbO365SavedAccounts.Items.Add("-- 选择账户 --");
+            cmbO365SavedAccounts.SelectedIndex = 0;
+            cmbO365SavedAccounts.SelectedIndexChanged += CmbO365SavedAccounts_SelectedIndexChanged;
+
+            var lblAdminAccount = new Label { Text = "管理员账户:", AutoSize = true };
+            var txtO365AdminAccount = new TextBox
+            {
+                Width = 160,
+                ReadOnly = false,
+                Name = "txtO365AdminAccount"
+            };
+
+            var lblClientId = new Label { Text = "Client ID:", AutoSize = true };
+            txtO365ClientId = new TextBox { Width = 160, Name = "txtO365ClientId" };
+            var lblTenantId = new Label { Text = "租户ID:", AutoSize = true };
+            txtO365TenantId = new TextBox { Width = 160, Name = "txtO365TenantId" };
+            btnO365OAuthLogin = new Button
+            {
+                Text = "使用 Microsoft 登录",
+                AutoSize = true,
+                Padding = new Padding(10, 5, 10, 5),
+                BackColor = Color.FromArgb(0, 120, 215),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Microsoft Sans Serif", 9F, FontStyle.Bold),
+                Name = "btnO365OAuthLogin",
+                Tag = "PST"
+            };
+            btnO365OAuthLogin.Click += BtnO365OAuthLogin_Click;
+            cmbO365AuthType = new ComboBox { Visible = false };
+            cmbO365AuthType.Items.AddRange(new object[] { "OAuth 2.0" });
+            cmbO365AuthType.SelectedIndex = 0;
+
+            // Row 0: 选择账户 + 管理员账户(可手动输入)
+            tblAccount.Controls.Add(lblAccount, 0, 0);
+            tblAccount.Controls.Add(cmbO365SavedAccounts, 1, 0);
+            tblAccount.Controls.Add(lblAdminAccount, 2, 0);
+            tblAccount.Controls.Add(txtO365AdminAccount, 3, 0);
+
+            // Row 1: Client ID + 租户ID
+            tblAccount.Controls.Add(lblClientId, 0, 1);
+            tblAccount.Controls.Add(txtO365ClientId, 1, 1);
+            tblAccount.Controls.Add(lblTenantId, 2, 1);
+            tblAccount.Controls.Add(txtO365TenantId, 3, 1);
+
+            // Row 2: 登录按钮(左对齐)
+            tblAccount.Controls.Add(btnO365OAuthLogin, 0, 2);
+
+            grpAccount.Controls.Add(tblAccount);
+            mainLayout.Controls.Add(grpAccount, 0, 0);
+
+            // ========== 区块2: 源文件配置 (GroupBox) ==========
+            var grpSource = new GroupBox
+            {
+                Text = "PST 文件导入",
+                Dock = DockStyle.Fill,
+                Padding = new Padding(10)
+            };
+
+            var tblSource = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 4,
+                RowCount = 2,
+                Padding = new Padding(5),
+                RowStyles = {
+                    new RowStyle(SizeType.AutoSize),
+                    new RowStyle(SizeType.AutoSize)
+                },
+                ColumnStyles = {
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 35),
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 65)
+                }
+            };
+
+            var lblSourceType = new Label { Text = "邮件来源:", AutoSize = true };
+            cmbO365SourceType = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Width = 120,
+                Name = "cmbO365SourceType"
+            };
+            cmbO365SourceType.Items.AddRange(new object[] { "PST 文件" });
+            cmbO365SourceType.SelectedIndex = 0;
+            cmbO365SourceType.SelectedIndexChanged += CmbO365SourceType_SelectedIndexChanged;
+
+            var lblTargetFolder = new Label { Text = "目标文件夹:", AutoSize = true };
+            cmbO365TargetFolder = new ComboBox
+            {
+                DropDownStyle = ComboBoxStyle.DropDown,
+                Width = 120,
+                Name = "cmbO365TargetFolder"
+            };
+            cmbO365TargetFolder.Items.AddRange(new object[] { "Inbox", "Sent Items", "Drafts", "Deleted Items" });
+            cmbO365TargetFolder.Text = "";
+
+            var lblSource = new Label { Text = "源路径:", AutoSize = true };
+            txtO365SourcePath = new TextBox { Width = 300, Name = "txtO365SourcePath" };
+            btnO365SourceBrowse = new Button
+            {
+                Text = "浏览...",
+                Width = 70,
+                BackColor = Color.FromArgb(245, 245, 245),
+                FlatStyle = FlatStyle.Flat
+            };
+            btnO365SourceBrowse.Click += BtnO365SourceBrowse_Click;
+
+            var lblPstMethod = new Label { Text = "PST导入方式:", AutoSize = true, Visible = false, Name = "lblPstMethod" };
+            radO365PstExtract = new RadioButton { Text = "提取为EML后导入", Visible = false, Checked = true };
+            radO365PstDirect = new RadioButton { Text = "EWS直接上传", Visible = false };
+            var lblPstNote = new Label { Text = "注意: PST导入需要开启Outlook", ForeColor = Color.Red, Visible = false, Name = "lblPstNote" };
+
+            tblSource.Controls.Add(lblSourceType, 0, 0);
+            tblSource.Controls.Add(cmbO365SourceType, 1, 0);
+            tblSource.Controls.Add(lblTargetFolder, 2, 0);
+            tblSource.Controls.Add(cmbO365TargetFolder, 3, 0);
+            tblSource.Controls.Add(lblSource, 0, 1);
+            tblSource.Controls.Add(txtO365SourcePath, 1, 1);
+            tblSource.Controls.Add(btnO365SourceBrowse, 2, 1);
+            tblSource.Controls.Add(lblPstMethod, 0, 1);
+            tblSource.Controls.Add(radO365PstExtract, 1, 1);
+            tblSource.Controls.Add(radO365PstDirect, 2, 1);
+            tblSource.Controls.Add(lblPstNote, 3, 1);
+
+            grpSource.Controls.Add(tblSource);
+            mainLayout.Controls.Add(grpSource, 0, 1);
+
+            // ========== 区块3: 操作区 (GroupBox) ==========
+            var grpAction = new GroupBox
+            {
+                Text = "导入进度",
+                Dock = DockStyle.Top,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(10)
+            };
+
+            var tblAction = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                ColumnCount = 3,
+                RowCount = 2,
+                AutoSize = true,
+                Padding = new Padding(5),
+                RowStyles = {
+                    new RowStyle(SizeType.AutoSize),
+                    new RowStyle(SizeType.AutoSize)
+                },
+                ColumnStyles = {
+                    new ColumnStyle(SizeType.AutoSize),
+                    new ColumnStyle(SizeType.Percent, 100),
+                    new ColumnStyle(SizeType.AutoSize)
+                }
+            };
+
+            btnO365Import = new Button
+            {
+                Text = "▶ 开始导入",
+                Size = new Size(130, 36),
+                BackColor = Color.FromArgb(0, 120, 215),
+                ForeColor = Color.White,
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold),
+                Tag = "PST",
+                Name = "btnO365Import"
+            };
+            btnO365Import.Click += (s, ev) => BtnO365Import_Click(s, ev, cmbO365TargetFolder.Text);
+
+            progressO365 = new ProgressBar
+            {
+                Dock = DockStyle.Fill,
+                Height = 12,
+                Style = ProgressBarStyle.Continuous,
+                Name = "progressO365"
+            };
+            var lblProgressPercent = new Label
+            {
+                Name = "lblProgressPercent",
+                Text = "0%",
+                AutoSize = true,
+                ForeColor = Color.Gray
+            };
+            lblO365Status = new Label
+            {
+                Text = "就绪",
+                AutoSize = true,
+                ForeColor = Color.Gray,
+                Name = "lblO365Status"
+            };
+
+            tblAction.Controls.Add(btnO365Import, 0, 0);
+            tblAction.SetRowSpan(btnO365Import, 2);
+            tblAction.Controls.Add(progressO365, 1, 0);
+            tblAction.Controls.Add(lblProgressPercent, 2, 0);
+            tblAction.Controls.Add(lblO365Status, 1, 1);
+
+            grpAction.Controls.Add(tblAction);
+            mainLayout.Controls.Add(grpAction, 0, 2);
+
+            panel.Controls.Add(mainLayout);
+
+            LoadSavedOAuthAccounts();
             return panel;
         }
 
@@ -4606,11 +4896,22 @@ namespace MailConverter
         {
             try
             {
-                lblO365Status.Text = "正在打开浏览器进行 OAuth2 登录...";
-                lblO365Status.ForeColor = Color.Blue;
+                // 根据sender的Tag确定是哪个页签
+                var btn = sender as Button;
+                string panelName = btn?.Tag?.ToString() == "PST" ? "PSTO365Panel" : "EMLO365Panel";
+                var panel = this.Controls.Find(panelName, true).FirstOrDefault() as Panel;
 
-                string clientId = txtO365ClientId.Text.Trim();
-                string email = txtO365Email.Text.Trim();
+                // 查找页签中的控件
+                var txtClientId = panel?.Controls.Find("txtO365ClientId", true).FirstOrDefault() as TextBox;
+                var txtTenantId = panel?.Controls.Find("txtO365TenantId", true).FirstOrDefault() as TextBox;
+                var txtEmail = panel?.Controls.Find("txtO365AdminAccount", true).FirstOrDefault() as TextBox;
+                var lblStatus = panel?.Controls.Find("lblO365Status", true).FirstOrDefault() as Label;
+
+                lblStatus.Text = "正在打开浏览器进行 OAuth2 登录...";
+                lblStatus.ForeColor = Color.Blue;
+
+                string clientId = txtClientId?.Text?.Trim() ?? "";
+                string email = txtEmail?.Text?.Trim() ?? "";
 
                 if (string.IsNullOrEmpty(clientId))
                 {
@@ -4635,10 +4936,13 @@ namespace MailConverter
 
                 // Build OAuth URL
                 string redirectUri = Uri.EscapeDataString("http://localhost:5555/");
-                string scope = Uri.EscapeDataString("https://outlook.office365.com/EWS.AccessAsUser.All");
+                // 使用 Microsoft Graph 委托权限 (Mail.ReadWrite)
+                // 之前用 EWS.AccessAsUser.All 会让 token 的 aud=outlook.office365.com，
+                // 调 Graph API 时会报 "Invalid audience"。
+                string scope = Uri.EscapeDataString("https://graph.microsoft.com/Mail.ReadWrite");
 
                 // 获取租户 ID，如果为空则使用 common
-                string tenantId = txtO365TenantId?.Text?.Trim();
+                string tenantId = txtTenantId?.Text?.Trim();
                 string tenant = string.IsNullOrEmpty(tenantId) ? "common" : tenantId;
 
                 string authUrl = $"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize?" +
@@ -4659,7 +4963,7 @@ namespace MailConverter
                 });
 
                 // Wait for callback
-                lblO365Status.Text = "请在浏览器中完成登录，然后等待...";
+                lblStatus.Text = "请在浏览器中完成登录，然后等待...";
 
                 var context = await _o365Listener.GetContextAsync();
                 var request = context.Request;
@@ -4698,8 +5002,8 @@ namespace MailConverter
 
                 if (!string.IsNullOrEmpty(error))
                 {
-                    lblO365Status.Text = "OAuth2 授权失败: " + error;
-                    lblO365Status.ForeColor = Color.Red;
+                    lblStatus.Text = "OAuth2 授权失败: " + error;
+                    lblStatus.ForeColor = Color.Red;
                     _o365Listener.Stop();
                     _o365Listener.Close();
                     return;
@@ -4707,14 +5011,14 @@ namespace MailConverter
 
                 if (string.IsNullOrEmpty(authCode))
                 {
-                    lblO365Status.Text = "未获取到授权码";
-                    lblO365Status.ForeColor = Color.Red;
+                    lblStatus.Text = "未获取到授权码";
+                    lblStatus.ForeColor = Color.Red;
                     _o365Listener.Stop();
                     _o365Listener.Close();
                     return;
                 }
 
-                lblO365Status.Text = "正在获取访问令牌...";
+                lblStatus.Text = "正在获取访问令牌...";
 
                 // Exchange code for token
                 using (var httpClient = new System.Net.Http.HttpClient())
@@ -4725,19 +5029,19 @@ namespace MailConverter
                         {"code", authCode},
                         {"redirect_uri", "http://localhost:5555/"},
                         {"grant_type", "authorization_code"},
-                        {"scope", "https://outlook.office365.com/EWS.AccessAsUser.All"}
+                        {"scope", "https://graph.microsoft.com/Mail.ReadWrite"}
                     });
 
                     // 使用相同的租户 ID 获取令牌
-                    string tId = txtO365TenantId?.Text?.Trim();
+                    string tId = txtTenantId?.Text?.Trim();
                     string tName = string.IsNullOrEmpty(tId) ? "common" : tId;
                     var tokenResponse = await httpClient.PostAsync($"https://login.microsoftonline.com/{tName}/oauth2/v2.0/token", tokenRequest);
                     var tokenContent = await tokenResponse.Content.ReadAsStringAsync();
 
                     if (!tokenResponse.IsSuccessStatusCode)
                     {
-                        lblO365Status.Text = "获取令牌失败: " + tokenContent;
-                        lblO365Status.ForeColor = Color.Red;
+                        lblStatus.Text = "获取令牌失败: " + tokenContent;
+                        lblStatus.ForeColor = Color.Red;
                         _o365Listener.Stop();
                         _o365Listener.Close();
                         return;
@@ -4762,19 +5066,19 @@ namespace MailConverter
                         _isO365OAuthConnected = true;
                         _office365OAuthEmail = email;
 
-                        lblO365Status.Text = "OAuth2 登录成功! 正在加载文件夹...";
-                        lblO365Status.ForeColor = Color.Green;
+                        lblStatus.Text = "OAuth2 登录成功! 正在加载文件夹...";
+                        lblStatus.ForeColor = Color.Green;
 
                         // 加载文件夹列表
                         LoadO365Folders(email, accessToken);
 
-                        btnO365OAuthLogin.Text = "已连接";
-                        btnO365OAuthLogin.Enabled = false;
+                        btn.Text = "已连接";
+                        btn.Enabled = false;
                     }
                     else
                     {
-                        lblO365Status.Text = "令牌响应格式错误: " + tokenContent;
-                        lblO365Status.ForeColor = Color.Red;
+                        lblStatus.Text = "令牌响应格式错误: " + tokenContent;
+                        lblStatus.ForeColor = Color.Red;
                     }
                 }
 
@@ -4783,8 +5087,9 @@ namespace MailConverter
             }
             catch (Exception ex)
             {
-                lblO365Status.Text = "OAuth2 登录失败: " + ex.Message;
-                lblO365Status.ForeColor = Color.Red;
+                var lblStatus = this.Controls.Find("lblO365Status", true).FirstOrDefault() as Label;
+                lblStatus.Text = "OAuth2 登录失败: " + ex.Message;
+                lblStatus.ForeColor = Color.Red;
                 Serilog.Log.Error(ex, "OAuth2 login failed");
             }
         }
@@ -14624,7 +14929,7 @@ namespace MailConverter
                     var clientSecret = _exchangeOnlineService.ClientSecret ?? "";
 
                     // 收集所有邮箱和联系人
-                    var emailContacts = new Dictionary<string, List<PstExtractService.PstContactData>>();
+                    var emailContacts = new Dictionary<string, List<ContactData>>();
 
                     foreach (var csvFile in selectedFiles)
                     {
@@ -14659,7 +14964,7 @@ namespace MailConverter
                                 }
 
                                 // 支持中英文表头
-                                var contact = new PstExtractService.PstContactData
+                                var contact = new ContactData
                                 {
                                     DisplayName = GetDictValue(dict, "显示名称", "DisplayName"),
                                     FirstName = GetDictValue(dict, "名字", "FirstName"),
@@ -14678,7 +14983,7 @@ namespace MailConverter
                                 };
 
                                 if (!emailContacts.ContainsKey(targetEmail))
-                                    emailContacts[targetEmail] = new List<PstExtractService.PstContactData>();
+                                    emailContacts[targetEmail] = new List<ContactData>();
 
                                 emailContacts[targetEmail].Add(contact);
                                 totalContacts++;
@@ -15251,7 +15556,7 @@ namespace MailConverter
                     var clientSecret = _exchangeOnlineService.ClientSecret ?? "";
 
                     // 收集所有邮箱和日历
-                    var emailCalendars = new Dictionary<string, List<PstExtractService.PstCalendarData>>();
+                    var emailCalendars = new Dictionary<string, List<CalendarData>>();
 
                     foreach (var csvFile in selectedFiles)
                     {
@@ -15296,7 +15601,7 @@ namespace MailConverter
 
                                 if (startTime == default(DateTime) || endTime == default(DateTime)) continue;
 
-                                var calendar = new PstExtractService.PstCalendarData
+                                var calendar = new CalendarData
                                 {
                                     Subject = GetDictValue(dict, "主题", "Subject"),
                                     Body = GetDictValue(dict, "正文", "Body"),
@@ -15311,7 +15616,7 @@ namespace MailConverter
                                 };
 
                                 if (!emailCalendars.ContainsKey(targetEmail))
-                                    emailCalendars[targetEmail] = new List<PstExtractService.PstCalendarData>();
+                                    emailCalendars[targetEmail] = new List<CalendarData>();
 
                                 emailCalendars[targetEmail].Add(calendar);
                                 totalEvents++;
@@ -15580,13 +15885,13 @@ namespace MailConverter
             };
 
             // 解析VCF文件并转换为联系人对象
-            List<PstExtractService.PstContactData> ParseVcfToContacts(string vcfPath)
+            List<ContactData> ParseVcfToContacts(string vcfPath)
             {
-                var contacts = new List<PstExtractService.PstContactData>();
+                var contacts = new List<ContactData>();
                 try
                 {
                     var lines = File.ReadAllLines(vcfPath, Encoding.UTF8);
-                    PstExtractService.PstContactData currentContact = null;
+                    ContactData currentContact = null;
                     string currentEmail = null;
 
                     foreach (var line in lines)
@@ -15594,7 +15899,7 @@ namespace MailConverter
                         var trimmedLine = line.Trim();
                         if (trimmedLine == "BEGIN:VCARD")
                         {
-                            currentContact = new PstExtractService.PstContactData();
+                            currentContact = new ContactData();
                         }
                         else if (trimmedLine == "END:VCARD" && currentContact != null)
                         {
@@ -15752,7 +16057,7 @@ namespace MailConverter
                     var clientSecret = _exchangeOnlineService.ClientSecret ?? "";
 
                     // 收集所有邮箱和联系人
-                    var emailContacts = new Dictionary<string, List<PstExtractService.PstContactData>>();
+                    var emailContacts = new Dictionary<string, List<ContactData>>();
 
                     foreach (var vcfFile in selectedFiles)
                     {
@@ -15766,7 +16071,7 @@ namespace MailConverter
                             if (contacts.Count == 0) continue;
 
                             if (!emailContacts.ContainsKey(targetEmail))
-                                emailContacts[targetEmail] = new List<PstExtractService.PstContactData>();
+                                emailContacts[targetEmail] = new List<ContactData>();
 
                             emailContacts[targetEmail].AddRange(contacts);
                             totalContacts += contacts.Count;
@@ -18745,7 +19050,8 @@ namespace MailConverter
 
             // Show/hide PST method options using declared fields
             if (radO365PstExtract != null) radO365PstExtract.Visible = isPst;
-            if (radO365PstDirect != null) radO365PstDirect.Visible = isPst;
+            // EWS 直接上传模式已废弃, 永远隐藏 (统一走 EML 中转路径)
+            if (radO365PstDirect != null) radO365PstDirect.Visible = false;
 
             // Find and toggle the label
             Control lblPstMethod = null;
@@ -18798,25 +19104,48 @@ namespace MailConverter
 
         private void BtnO365SourceBrowse_Click(object sender, EventArgs e)
         {
-            if (cmbO365SourceType.SelectedIndex == 0) // EML文件夹
+            // 找到按钮所在的页签
+            var btn = sender as Button;
+            Control current = btn;
+            string panelName = null;
+            while (current != null)
+            {
+                if (!string.IsNullOrEmpty(current.Name) &&
+                    (current.Name == "EMLO365Panel" || current.Name == "PSTO365Panel"))
+                {
+                    panelName = current.Name;
+                    break;
+                }
+                current = current.Parent;
+            }
+            if (panelName == null) return;
+
+            var panel = this.Controls.Find(panelName, true).FirstOrDefault() as Panel;
+            var cmbSourceType = panel?.Controls.Find("cmbO365SourceType", true).FirstOrDefault() as ComboBox;
+            var txtSourcePath = panel?.Controls.Find("txtO365SourcePath", true).FirstOrDefault() as TextBox;
+
+            if (cmbSourceType == null || txtSourcePath == null) return;
+
+            if (panelName == "EMLO365Panel") // EML: 选择文件夹
             {
                 using (var dialog = new FolderBrowserDialog())
                 {
                     dialog.Description = "选择EML文件夹";
                     if (dialog.ShowDialog() == DialogResult.OK)
                     {
-                        txtO365SourcePath.Text = dialog.SelectedPath;
+                        txtSourcePath.Text = dialog.SelectedPath;
                     }
                 }
             }
-            else if (cmbO365SourceType.SelectedIndex == 1) // PST文件
+            else if (panelName == "PSTO365Panel") // PST: 选择单个文件
             {
                 using (var dialog = new OpenFileDialog())
                 {
                     dialog.Filter = "PST文件|*.pst";
+                    dialog.Title = "选择PST文件";
                     if (dialog.ShowDialog() == DialogResult.OK)
                     {
-                        txtO365SourcePath.Text = dialog.FileName;
+                        txtSourcePath.Text = dialog.FileName;
                     }
                 }
             }
@@ -19421,13 +19750,30 @@ namespace MailConverter
         }
 
 
-        private async void BtnO365Import_Click(string targetFolder)
+        private async void BtnO365Import_Click(object sender, EventArgs e, string targetFolder)
         {
+            // 根据sender的Tag确定是哪个页签
+            var btn = sender as Button;
+            string panelName = btn?.Tag?.ToString() == "PST" ? "PSTO365Panel" : "EMLO365Panel";
+            var panel = this.Controls.Find(panelName, true).FirstOrDefault() as Panel;
+
+            // 查找页签中的控件
+            var cmbO365SourceTypePanel = panel?.Controls.Find("cmbO365SourceType", true).FirstOrDefault() as ComboBox;
+            var txtO365SourcePathPanel = panel?.Controls.Find("txtO365SourcePath", true).FirstOrDefault() as TextBox;
+            var cmbO365TargetFolderPanel = panel?.Controls.Find("cmbO365TargetFolder", true).FirstOrDefault() as ComboBox;
+            var lblO365StatusPanel = panel?.Controls.Find("lblO365Status", true).FirstOrDefault() as Label;
+            var progressO365Panel = panel?.Controls.Find("progressO365", true).FirstOrDefault() as ProgressBar;
+            var lblProgressPercentPanel = panel?.Controls.Find("lblProgressPercent", true).FirstOrDefault() as Label;
+            var btnO365ImportPanel = panel?.Controls.Find("btnO365Import", true).FirstOrDefault() as Button;
+
+            // 获取实际的目标文件夹值，默认为Inbox
+            string actualTargetFolder = string.IsNullOrWhiteSpace(cmbO365TargetFolderPanel?.Text) ? "Inbox" : cmbO365TargetFolderPanel.Text;
+
             // 检查连接状态
             bool isOAuth = cmbO365AuthType.SelectedIndex == 0; // OAuth 2.0 is at index 0
 
-            Serilog.Log.Information("BtnO365Import_Click 开始, isOAuth={OAuth}, _isO365OAuthConnected={Connected}, _office365Service={Service}",
-                isOAuth, _isO365OAuthConnected, _office365Service != null ? "not null" : "null");
+            Serilog.Log.Information("BtnO365Import_Click 开始, isOAuth={OAuth}, _isO365OAuthConnected={Connected}, panel={Panel}",
+                isOAuth, _isO365OAuthConnected, panelName);
 
             // 检查服务是否已连接，如果未连接则创建并连接
             bool needConnect = false;
@@ -19447,15 +19793,21 @@ namespace MailConverter
                 {
                     if (!_isO365OAuthConnected || string.IsNullOrEmpty(_office365AccessToken))
                     {
-                        lblO365Status.Text = "请先通过 OAuth2 登录";
-                        lblO365Status.ForeColor = Color.Red;
+                        if (lblO365StatusPanel != null)
+                        {
+                            lblO365StatusPanel.Text = "请先通过 OAuth2 登录";
+                            lblO365StatusPanel.ForeColor = Color.Red;
+                        }
                         return;
                     }
                     Serilog.Log.Information("准备使用 OAuth 连接, email={Email}", _office365OAuthEmail);
                     if (!_office365Service.ConnectWithOAuth(_office365OAuthEmail, _office365AccessToken))
                     {
-                        lblO365Status.Text = "OAuth2 连接失败，请重新登录";
-                        lblO365Status.ForeColor = Color.Red;
+                        if (lblO365StatusPanel != null)
+                        {
+                            lblO365StatusPanel.Text = "OAuth2 连接失败，请重新登录";
+                            lblO365StatusPanel.ForeColor = Color.Red;
+                        }
                         return;
                     }
                     Serilog.Log.Information("OAuth 连接成功");
@@ -19464,34 +19816,44 @@ namespace MailConverter
                 {
                     if (!_office365Service.Connect(txtO365Email.Text, txtO365Password.Text, txtO365Domain.Text))
                     {
-                        lblO365Status.Text = "请先测试连接";
-                        lblO365Status.ForeColor = Color.Red;
+                        if (lblO365StatusPanel != null)
+                        {
+                            lblO365StatusPanel.Text = "请先测试连接";
+                            lblO365StatusPanel.ForeColor = Color.Red;
+                        }
                         return;
                     }
                 }
             }
 
-            // 验证源路径（仅EML和PST需要）
-            if (cmbO365SourceType.SelectedIndex != 2 && string.IsNullOrWhiteSpace(txtO365SourcePath.Text))
+            // 验证源路径 (IMAP 模式无需源路径)
+            int sourceTypeIndex = cmbO365SourceTypePanel?.SelectedIndex ?? 0;
+            bool isPstPanel = panelName == "PSTO365Panel";
+            bool isImapMode = !isPstPanel && sourceTypeIndex == 2;
+            if (!isImapMode && string.IsNullOrWhiteSpace(txtO365SourcePathPanel?.Text))
             {
-                lblO365Status.Text = "请选择源路径";
-                lblO365Status.ForeColor = Color.Red;
+                if (lblO365StatusPanel != null)
+                {
+                    lblO365StatusPanel.Text = "请选择源路径";
+                    lblO365StatusPanel.ForeColor = Color.Red;
+                }
                 return;
             }
 
             if (isO365Importing) return;
             isO365Importing = true;
-            btnO365Import.Enabled = false;
+            if (btnO365ImportPanel != null) btnO365ImportPanel.Enabled = false;
 
             var progress = new Progress<int>(count =>
             {
-                progressO365.Value = Math.Min(count, 100);
-                lblO365Status.Text = $"已导入 {count} 封邮件...";
+                if (progressO365Panel != null) progressO365Panel.Value = Math.Min(count, 100);
+                if (lblO365StatusPanel != null) lblO365StatusPanel.Text = $"已导入 {count} 封邮件...";
+                if (lblProgressPercentPanel != null) lblProgressPercentPanel.Text = $"{Math.Min(count, 100)}%";
             });
 
             // 记录日志
             Serilog.Log.Information("开始导入，源路径: {Path}, 目标文件夹: {Folder}, 类型: {Type}",
-                txtO365SourcePath.Text, targetFolder, cmbO365SourceType.SelectedIndex);
+                txtO365SourcePathPanel?.Text, actualTargetFolder, sourceTypeIndex);
 
             await Task.Run(async () =>
             {
@@ -19499,49 +19861,139 @@ namespace MailConverter
                 {
                     int imported = 0;
 
-                    if (cmbO365SourceType.SelectedIndex == 0) // EML文件夹
+                    if (isPstPanel) // PST 面板 - 单文件导入
                     {
-                        Serilog.Log.Information("EML导入模式，源: {Source}", txtO365SourcePath.Text);
-                        imported = _office365Service.ImportEmlFolder(txtO365SourcePath.Text, targetFolder, progress);
-                    }
-                    else if (cmbO365SourceType.SelectedIndex == 1) // PST文件
-                    {
-                        Serilog.Log.Information("PST导入模式，源: {Source}", txtO365SourcePath.Text);
+                        string pstSourcePath = txtO365SourcePathPanel?.Text ?? "";
+                        string pstTargetEmail = _office365OAuthEmail ?? "";
+                        var txtLog = panel?.Controls.Find("txtO365ImportLog", true).FirstOrDefault() as TextBox;
 
-                        bool useDirectUpload = radO365PstDirect != null && radO365PstDirect.Checked;
+                        // PST 阶段状态更新 (顶部状态标签 + 日志框)
+                        Action<string> pstUpdateStatus = (msg) => {
+                            this.Invoke(new Action(() => {
+                                if (lblO365StatusPanel != null) {
+                                    lblO365StatusPanel.Text = msg;
+                                    lblO365StatusPanel.ForeColor = Color.Black;
+                                }
+                            }));
+                        };
 
-                        if (useDirectUpload)
+                        // PST 导入专用日志回调：写入 Pstimport_日期.log 文件 + 底部日志框
+                        Action<string> pstAppendLog = (msg) => {
+                            if (txtLog != null)
+                            {
+                                txtLog.Invoke(new Action(() => {
+                                    txtLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {msg}\r\n");
+                                }));
+                            }
+                            // 写入 Pstimport_日期.log 并显示到主日志框 (_logTextBox)
+                            this.Invoke(new Action(() => Log(msg, "PSTImport")));
+                        };
+
+                        // 阶段 1: 加载 PST 文件
+                        pstUpdateStatus("正在加载 PST 文件...");
+                        pstAppendLog($"开始 PST 导入: 源文件={pstSourcePath}, 目标={pstTargetEmail}/{actualTargetFolder}");
+
+                        if (!File.Exists(pstSourcePath) || !pstSourcePath.EndsWith(".pst", StringComparison.OrdinalIgnoreCase))
                         {
-                            // EWS直接上传模式
-                            Serilog.Log.Information("使用EWS直接上传模式");
-                            imported = _office365Service.ImportPstDirect(txtO365SourcePath.Text, targetFolder, progress, this);
+                            pstAppendLog($"[错误] PST 源文件无效: {pstSourcePath}");
+                            pstUpdateStatus("PST 源文件无效");
+                            this.Invoke(new Action(() => {
+                                if (lblO365StatusPanel != null) lblO365StatusPanel.ForeColor = Color.Red;
+                            }));
+                            return;
                         }
-                        else
+
+                        pstUpdateStatus($"PST 文件加载成功: {Path.GetFileName(pstSourcePath)}");
+                        pstAppendLog($"PST 文件加载成功: {Path.GetFileName(pstSourcePath)}");
+                        int pstImported = 0;
+
+                        // EWS 直接上传模式已废弃, 统一走 "PST→EML→Graph" 路径
                         {
-                            // 先提取PST到临时文件夹
+                            // 阶段 2: 解析 PST 为 EML
                             var tempDir = Path.Combine(Path.GetTempPath(), "O365Import_" + Guid.NewGuid());
                             Directory.CreateDirectory(tempDir);
+                            pstAppendLog($"已创建临时目录: {tempDir}");
 
                             var pstService = new PstExtractService();
-                            if (pstService.ExtractToEml(txtO365SourcePath.Text, tempDir))
+                            pstUpdateStatus("正在解析 PST 为 EML 文件...");
+                            pstAppendLog("正在解析 PST 为 EML 文件...");
+
+                            if (pstService.ExtractToEml(pstSourcePath, tempDir))
                             {
-                                Serilog.Log.Information("PST提取完成，开始导入EML，临时目录: {Temp}", tempDir);
-                                imported = _office365Service.ImportEmlFolder(tempDir, targetFolder, progress);
-                                // 清理临时文件夹
+                                pstUpdateStatus("PST 解析完成，正在导入邮件到 Office 365...");
+
+                                // 读取 UI 中的目标文件夹 (保留空字符串语义: 空 = 邮箱根目录)
+                                string pstTargetFolder = cmbO365TargetFolderPanel?.Text?.Trim() ?? "";
+                                string pstTargetDesc = string.IsNullOrEmpty(pstTargetFolder)
+                                    ? "邮箱根目录"
+                                    : $"目标文件夹 [{pstTargetFolder}]";
+                                pstAppendLog($"PST 解析完成，开始批量导入 EML 到 {pstTargetEmail}/{pstTargetDesc}");
+
+                                // 设置 LogCallback，让 Graph API 内部的 PstImportLogger 消息也能显示到 UI 日志框
+                                _office365Service.LogCallback = pstAppendLog;
+
+                                // 使用 UI 输入的目标文件夹; 为空则子文件夹直接放在邮箱根目录
+                                pstImported = _office365Service.ImportEmlFolder(tempDir, pstTargetFolder, progress);
+                                pstAppendLog($"批量导入完成，本 PST 共导入 {pstImported} 封邮件");
                                 try { Directory.Delete(tempDir, true); } catch { }
                             }
                             else
                             {
-                                Serilog.Log.Error("PST提取失败");
+                                pstAppendLog($"[错误] PST 提取失败: {pstSourcePath}");
+                                pstUpdateStatus("PST 解析失败");
+                                this.Invoke(new Action(() => {
+                                    if (lblO365StatusPanel != null) lblO365StatusPanel.ForeColor = Color.Red;
+                                }));
                             }
                         }
+                        imported += pstImported;
+                        pstAppendLog($"PST 导入完成: 文件={Path.GetFileName(pstSourcePath)}, 本次导入 {pstImported} 封");
                     }
-                    else if (cmbO365SourceType.SelectedIndex == 2) // IMAP账户
+                    else if (sourceTypeIndex == 0) // EML 面板 - EML 文件夹导入
                     {
-                        // 从IMAP收取并导入到Office 365
-                        var imapService = new ImapFetchService();
+                        Serilog.Log.Information("EML导入模式，源: {Source}", txtO365SourcePathPanel?.Text);
+                        imported = 0;
+                        if (_office365Service != null)
+                        {
+                            // 使用 ImportEmlWithGraph，它支持 Impersonation 和 Graph API
+                            var targetEmail = _office365OAuthEmail ?? "";
+                            var txtLog = panel?.Controls.Find("txtO365ImportLog", true).FirstOrDefault() as TextBox;
+                            string sourceRoot = txtO365SourcePathPanel?.Text ?? "";
+                            int fileCount = 0;
 
-                        // 获取IMAP配置
+                            // 获取文件总数用于进度计算
+                            var emlFiles = Directory.GetFiles(sourceRoot, "*.eml", SearchOption.AllDirectories);
+                            fileCount = emlFiles.Length;
+
+                            Action<string> appendLog = (msg) => {
+                                if (txtLog != null)
+                                {
+                                    txtLog.Invoke(new Action(() => {
+                                        txtLog.AppendText($"[{DateTime.Now:HH:mm:ss}] {msg}\r\n");
+                                    }));
+                                }
+                                // 同时写入主日志框 (_logTextBox) 和 SingleUserSYNCO365 日志文件
+                                this.Invoke(new Action(() => Log(msg, "SingleUserSYNCO365")));
+                            };
+
+                            // 设置服务回调，使 ImportEmlWithGraph 内部的 PstImportLogger 消息也能显示到日志框
+                            _office365Service.LogCallback = appendLog;
+
+                            appendLog($"开始导入 {fileCount} 个 EML 文件到 {targetEmail}/{actualTargetFolder}");
+
+                            // 直接走 ImportEmlFolder, 让它处理子目录层级 (target + "/" + relativeDir)
+                            imported = _office365Service.ImportEmlFolder(sourceRoot, actualTargetFolder, progress);
+                            appendLog($"导入完成: 成功 {imported}/{fileCount} 封");
+                            Serilog.Log.Information("EML导入完成: {Count} 封", imported);
+                        }
+                        else
+                        {
+                            Serilog.Log.Warning("_office365Service 为空，无法导入EML");
+                        }
+                    }
+                    else if (sourceTypeIndex == 2) // IMAP账户
+                    {
+                        var imapService = new ImapFetchService();
                         var imapEmail = "";
                         var imapPassword = "";
 
@@ -19555,17 +20007,18 @@ namespace MailConverter
                         {
                             this.Invoke(new Action(() =>
                             {
-                                lblO365Status.Text = "请填写IMAP邮箱信息";
-                                lblO365Status.ForeColor = Color.Red;
+                                if (lblO365StatusPanel != null)
+                                {
+                                    lblO365StatusPanel.Text = "请填写IMAP邮箱信息";
+                                    lblO365StatusPanel.ForeColor = Color.Red;
+                                }
                             }));
                             return;
                         }
 
-                        // 收取到临时目录
                         var tempDir = Path.Combine(Path.GetTempPath(), "O365Import_" + Guid.NewGuid());
                         Directory.CreateDirectory(tempDir);
 
-                        // 使用IMAP服务收取 (自动发现服务器)
                         bool fetchSuccess = await imapService.FetchEmailsToEmlAsync(
                             imapEmail,
                             imapPassword,
@@ -19577,14 +20030,14 @@ namespace MailConverter
 
                         if (fetchSuccess)
                         {
-                            // 导入到Office 365
-                            imported = _office365Service.ImportEmlFolder(tempDir, targetFolder, progress);
+                            imported = _office365Service.ImportEmlFolder(tempDir, actualTargetFolder, progress);
                             try { Directory.Delete(tempDir, true); } catch { }
                         }
 
                         this.Invoke(new Action(() =>
                         {
-                            lblO365Status.Text = $"IMAP收取完成，共 {imported} 封邮件";
+                            if (lblO365StatusPanel != null)
+                                lblO365StatusPanel.Text = $"IMAP收取完成，共 {imported} 封邮件";
                         }));
                         return;
                     }
@@ -19593,9 +20046,12 @@ namespace MailConverter
 
                     this.Invoke(new Action(() =>
                     {
-                        lblO365Status.Text = $"导入完成! 共导入 {imported} 封邮件";
-                        lblO365Status.ForeColor = Color.Green;
-                        progressO365.Value = 100;
+                        if (lblO365StatusPanel != null)
+                        {
+                            lblO365StatusPanel.Text = $"导入完成! 共导入 {imported} 封邮件";
+                            lblO365StatusPanel.ForeColor = Color.Green;
+                        }
+                        if (progressO365Panel != null) progressO365Panel.Value = 100;
                     }));
                 }
                 catch (Exception ex)
@@ -19603,8 +20059,11 @@ namespace MailConverter
                     Serilog.Log.Error(ex, "导入过程异常");
                     this.Invoke(new Action(() =>
                     {
-                        lblO365Status.Text = $"导入失败: {ex.Message}";
-                        lblO365Status.ForeColor = Color.Red;
+                        if (lblO365StatusPanel != null)
+                        {
+                            lblO365StatusPanel.Text = $"导入失败: {ex.Message}";
+                            lblO365StatusPanel.ForeColor = Color.Red;
+                        }
                     }));
                 }
                 finally
@@ -19612,7 +20071,7 @@ namespace MailConverter
                     this.Invoke(new Action(() =>
                     {
                         isO365Importing = false;
-                        btnO365Import.Enabled = true;
+                        if (btnO365ImportPanel != null) btnO365ImportPanel.Enabled = true;
                     }));
                 }
             });
@@ -19622,26 +20081,14 @@ namespace MailConverter
         {
             try
             {
-                var service = new Microsoft.Exchange.WebServices.Data.ExchangeService(Microsoft.Exchange.WebServices.Data.ExchangeVersion.Exchange2016);
-                service.Url = new Uri("https://outlook.office365.com/EWS/Exchange.asmx");
-                service.Credentials = new Microsoft.Exchange.WebServices.Data.OAuthCredentials(accessToken);
+                if (_office365Service == null) _office365Service = new Office365ImportService();
 
-                var folderView = new Microsoft.Exchange.WebServices.Data.FolderView(100);
-                folderView.Traversal = Microsoft.Exchange.WebServices.Data.FolderTraversal.Shallow;
-
-                var result = service.FindFolders(Microsoft.Exchange.WebServices.Data.WellKnownFolderName.MsgFolderRoot, folderView).Result;
-
-                var folders = new System.Collections.Generic.List<string>();
-                folders.Add("Inbox");
-                foreach (var folder in result)
-                {
-                    if (!folders.Contains(folder.DisplayName))
-                        folders.Add(folder.DisplayName);
-                }
+                // 使用 Graph API 列出文件夹 (OAuth access token 的 aud=graph.microsoft.com，EWS 无法使用)
+                var folders = await Task.Run(() => _office365Service.ListGraphMailFolders(accessToken, email));
 
                 cmbO365TargetFolder.Items.Clear();
                 cmbO365TargetFolder.Items.AddRange(folders.ToArray());
-                cmbO365TargetFolder.Text = "Inbox";
+                cmbO365TargetFolder.Text = "";
 
                 lblO365Status.Text = "文件夹加载完成";
             }
@@ -19679,7 +20126,7 @@ namespace MailConverter
 
                 cmbO365TargetFolder.Items.Clear();
                 cmbO365TargetFolder.Items.AddRange(folders.ToArray());
-                cmbO365TargetFolder.Text = "Inbox";
+                cmbO365TargetFolder.Text = "";
 
                 lblO365Status.Text = "文件夹加载完成";
             }
@@ -21662,15 +22109,20 @@ namespace MailConverter
 
         private void LoadSavedOAuthAccounts()
         {
-            if (cmbO365SavedAccounts == null) return;
+            if (cmbO365SavedAccounts == null) { Serilog.Log.Warning("cmbO365SavedAccounts 为 null"); return; }
 
             var selected = cmbO365SavedAccounts.SelectedItem?.ToString();
             cmbO365SavedAccounts.Items.Clear();
             cmbO365SavedAccounts.Items.Add("-- 选择账户 --");
 
+            Serilog.Log.Information("LoadSavedOAuthAccounts 开始, cmbO365SavedAccounts 存在");
+
             var settings = ConfigService.LoadAll();
+            Serilog.Log.Information("加载到 {Count} 个 OAuth 账户", settings.OAuthAccounts.Count);
+
             foreach (var account in settings.OAuthAccounts)
             {
+                Serilog.Log.Information("添加账户到下拉框: {Name}", account.Name);
                 cmbO365SavedAccounts.Items.Add(account.Name);
             }
 
@@ -21708,19 +22160,43 @@ namespace MailConverter
 
         private void CmbO365SavedAccounts_SelectedIndexChanged(object sender, EventArgs e)
         {
-            if (cmbO365SavedAccounts == null) return;
-            if (cmbO365SavedAccounts.SelectedIndex <= 0) return;
+            // 使用sender而不是类字段来判断是哪个下拉框触发了事件
+            var cmb = sender as ComboBox;
+            if (cmb == null) return;
+            if (cmb.SelectedIndex <= 0) return;
 
-            var selectedName = cmbO365SavedAccounts.SelectedItem?.ToString();
+            var selectedName = cmb.SelectedItem?.ToString();
             if (string.IsNullOrEmpty(selectedName)) return;
 
             var settings = ConfigService.LoadAll();
             var account = settings.OAuthAccounts.Find(a => a.Name == selectedName);
+
             if (account != null)
             {
-                txtO365ClientId.Text = account.ClientId;
-                txtO365TenantId.Text = account.TenantId;
-                txtO365Email.Text = account.Email;
+                // 找到cmbO365SavedAccounts所在的页签
+                Control panel = null;
+                Control current = cmb;
+                while (current != null)
+                {
+                    if (!string.IsNullOrEmpty(current.Name) &&
+                        (current.Name == "EMLO365Panel" || current.Name == "PSTO365Panel"))
+                    {
+                        panel = current;
+                        break;
+                    }
+                    current = current.Parent;
+                }
+
+                if (panel == null) return;
+
+                // 在对应的页签中查找并填充控件 (递归搜索)
+                var clientIdBox = panel.Controls.Find("txtO365ClientId", true).FirstOrDefault() as TextBox;
+                var tenantIdBox = panel.Controls.Find("txtO365TenantId", true).FirstOrDefault() as TextBox;
+                var adminAccountBox = panel.Controls.Find("txtO365AdminAccount", true).FirstOrDefault() as TextBox;
+
+                if (clientIdBox != null) clientIdBox.Text = account.ClientId;
+                if (tenantIdBox != null) tenantIdBox.Text = account.TenantId;
+                if (adminAccountBox != null) adminAccountBox.Text = account.Email;
             }
         }
 
