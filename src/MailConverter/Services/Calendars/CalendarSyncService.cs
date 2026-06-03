@@ -506,5 +506,164 @@ namespace MailConverter.Services.Calendars
 
             return false;
         }
+
+        /// <summary>
+        /// 从PST文件中提取日历到内存 (跳过ICS文件，直接用于Graph同步)
+        /// </summary>
+        public static List<CalendarData> ExtractCalendarFromPst(string pstPath, IProgress<int> progress = null)
+        {
+            Program.BatchToO365Logger.Information("开始提取 PST 日历(直接模式): {PstPath}", pstPath);
+
+            var calendars = new List<CalendarData>();
+
+            if (!File.Exists(pstPath))
+            {
+                Program.BatchToO365Logger.Error("PST 文件不存在: {Path}", pstPath);
+                return calendars;
+            }
+
+            Outlook.Application outlookApp = null;
+            Outlook.NameSpace ns = null;
+
+            try
+            {
+                try
+                {
+                    outlookApp = (Outlook.Application)Marshal.GetActiveObject("Outlook.Application");
+                }
+                catch
+                {
+                    outlookApp = new Outlook.Application();
+                    System.Threading.Thread.Sleep(5000);
+                }
+
+                ns = outlookApp.GetNamespace("MAPI");
+                Outlook.Folder pstFolder = null;
+
+                // 使用 AddStoreEx 挂载 PST 文件
+                try
+                {
+                    ns.AddStoreEx(pstPath, Outlook.OlStoreType.olStoreUnicode);
+                }
+                catch (Exception ex)
+                {
+                    Program.BatchToO365Logger.Warning("添加 Store 失败，可能已挂载: {Msg}", ex.Message);
+                }
+
+                // 寻找对应的 Folder
+                foreach (Outlook.Folder folder in ns.Folders)
+                {
+                    try
+                    {
+                        if (folder.Store != null && !string.IsNullOrEmpty(folder.Store.FilePath))
+                        {
+                            if (Path.GetFullPath(folder.Store.FilePath).Equals(Path.GetFullPath(pstPath), StringComparison.OrdinalIgnoreCase))
+                            {
+                                pstFolder = folder;
+                                break;
+                            }
+                        }
+                    }
+                    catch { }
+                }
+
+                if (pstFolder == null)
+                {
+                    Program.BatchToO365Logger.Error("无法找到 PST 文件对应的 Folder: {Path}", pstPath);
+                    return calendars;
+                }
+
+                // 遍历文件夹提取日历
+                ExtractCalendarRecursiveToMemory(pstFolder, calendars, progress);
+
+                Program.BatchToO365Logger.Information("日历提取完成，共 {Count} 个", calendars.Count);
+                return calendars;
+            }
+            catch (Exception ex)
+            {
+                Program.BatchToO365Logger.Error(ex, "提取 PST 日历失败: {Path}", pstPath);
+                return calendars;
+            }
+            finally
+            {
+                try { if (ns != null) Marshal.ReleaseComObject(ns); } catch { }
+                try { if (outlookApp != null) Marshal.ReleaseComObject(outlookApp); } catch { }
+            }
+        }
+
+        private static void ExtractCalendarRecursiveToMemory(Outlook.Folder folder, List<CalendarData> calendars, IProgress<int> progress)
+        {
+            try
+            {
+                Outlook.Items items = folder.Items;
+                for (int i = 1; i <= items.Count; i++)
+                {
+                    object item = null;
+                    try
+                    {
+                        item = items[i];
+                        if (item is Outlook.AppointmentItem appointment)
+                        {
+                            try
+                            {
+                                var calData = new CalendarData
+                                {
+                                    Subject = appointment.Subject ?? "",
+                                    Body = appointment.Body ?? "",
+                                    StartTime = appointment.Start,
+                                    EndTime = appointment.End,
+                                    Location = appointment.Location ?? "",
+                                    IsAllDayEvent = appointment.AllDayEvent,
+                                    ReminderSet = appointment.ReminderSet,
+                                    Categories = appointment.Categories ?? ""
+                                };
+
+                                try
+                                {
+                                    calData.RequiredAttendees = appointment.RequiredAttendees ?? "";
+                                    calData.OptionalAttendees = appointment.OptionalAttendees ?? "";
+                                    calData.ResourceAttendees = appointment.Resources ?? "";
+                                }
+                                catch { }
+
+                                try
+                                {
+                                    calData.IsRecurring = appointment.IsRecurring;
+                                }
+                                catch { }
+
+                                calendars.Add(calData);
+                                progress?.Report(calendars.Count);
+                            }
+                            catch (Exception ex)
+                            {
+                                Program.BatchToO365Logger.Warning(ex, "提取日历事件失败: {Subject}", appointment.Subject);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Program.BatchToO365Logger.Warning(ex, "处理日历项失败");
+                    }
+                    finally { if (item != null) Marshal.ReleaseComObject(item); }
+                }
+                Marshal.ReleaseComObject(items);
+            }
+            catch (Exception ex)
+            {
+                Program.BatchToO365Logger.Warning(ex, "遍历文件夹失败: {Name}", folder.Name);
+            }
+
+            // 递归处理子文件夹
+            try
+            {
+                foreach (Outlook.Folder subFolder in folder.Folders)
+                {
+                    ExtractCalendarRecursiveToMemory(subFolder, calendars, progress);
+                    Marshal.ReleaseComObject(subFolder);
+                }
+            }
+            catch { }
+        }
     }
 }

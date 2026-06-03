@@ -433,5 +433,10 @@ namespace MailConverter
         {
             return CalendarSyncService.ExtractCalendarToIcs(pstPath, outputDir, progress);
         }
+
+        public List<CalendarData> ExtractCalendarFromPst(string pstPath, IProgress<int> progress = null)
+        {
+            return CalendarSyncService.ExtractCalendarFromPst(pstPath, progress);
+        }
     }
 }
