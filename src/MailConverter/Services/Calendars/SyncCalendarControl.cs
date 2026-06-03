@@ -29,6 +29,7 @@ namespace MailConverter.Services.Calendars
         private Label lblUsername;
         private Label lblPassword;
         private Label lblSourceFile;
+        private ComboBox cmbSyncAccounts;
 
         /// <summary>
         /// 由 MainForm 在创建时注入,用于调用 BtnO365OAuthLogin_Click 等方法
@@ -62,6 +63,23 @@ namespace MailConverter.Services.Calendars
                 Font = new Font("Microsoft Sans Serif", 10F, FontStyle.Bold),
                 ForeColor = Color.FromArgb(0, 120, 215)
             };
+
+            // 已保存账户下拉框 (右侧)
+            var lblSavedAccount = new Label
+            {
+                Text = "已保存账户:",
+                Location = new Point(300, 47),
+                AutoSize = true,
+                Name = "lblSyncCalendarSavedAccount"
+            };
+            cmbSyncAccounts = new ComboBox
+            {
+                Location = new Point(380, 44),
+                Size = new Size(200, 22),
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Name = "cmbSyncCalendarSavedAccount"
+            };
+            cmbSyncAccounts.SelectedIndexChanged += CmbSyncAccounts_SelectedIndexChanged;
 
             var lblClientId = new Label { Text = "Client ID:", Location = new Point(30, 75), AutoSize = true };
             txtClientId = new TextBox { Location = new Point(110, 73), Size = new Size(160, 22), Name = "txtSyncCalendarClientId" };
@@ -165,6 +183,7 @@ namespace MailConverter.Services.Calendars
             // 添加所有控件
             this.Controls.Add(lblTitle);
             this.Controls.Add(lblSectionAuth);
+            this.Controls.Add(lblSavedAccount); this.Controls.Add(cmbSyncAccounts);
             this.Controls.Add(lblClientId); this.Controls.Add(txtClientId);
             this.Controls.Add(lblTenantId); this.Controls.Add(txtTenantId);
             this.Controls.Add(lblEmail); this.Controls.Add(txtEmail);
@@ -180,6 +199,36 @@ namespace MailConverter.Services.Calendars
             this.Controls.Add(btnStartSync);
             this.Controls.Add(progressSync);
             this.Controls.Add(lblSyncStatus);
+        }
+
+        /// <summary>
+        /// 由 MainForm 在初始化时调用,加载已保存的 OAuth 账户到下拉框
+        /// </summary>
+        public void LoadAccounts()
+        {
+            if (cmbSyncAccounts != null && MainForm != null)
+            {
+                MainForm.LoadSavedOAuthAccountsToComboBox(cmbSyncAccounts);
+            }
+        }
+
+        private void CmbSyncAccounts_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            if (cmbSyncAccounts.SelectedIndex > 0)
+            {
+                var selectedName = cmbSyncAccounts.SelectedItem?.ToString();
+                if (!string.IsNullOrEmpty(selectedName))
+                {
+                    var settings = ConfigService.LoadAll();
+                    var account = settings.OAuthAccounts.Find(a => a.Name == selectedName);
+                    if (account != null)
+                    {
+                        txtClientId.Text = account.ClientId;
+                        txtTenantId.Text = account.TenantId;
+                        txtEmail.Text = account.Email;
+                    }
+                }
+            }
         }
 
         private void UpdateControlsVisibility(int sourceType)

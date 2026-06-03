@@ -1377,6 +1377,7 @@ namespace MailConverter
             var syncContactsControl = new MailConverter.Services.Contacts.SyncContactsControl();
             syncContactsControl.Dock = DockStyle.Fill;
             syncContactsControl.MainForm = this;
+            syncContactsControl.LoadAccounts();
             _syncContactsTab.Controls.Add(syncContactsControl);
 
             // 同步日历子Tab
@@ -1384,6 +1385,7 @@ namespace MailConverter
             var syncCalendarControl = new MailConverter.Services.Calendars.SyncCalendarControl();
             syncCalendarControl.Dock = DockStyle.Fill;
             syncCalendarControl.MainForm = this;
+            syncCalendarControl.LoadAccounts();
             _syncCalendarTab.Controls.Add(syncCalendarControl);
 
             // 添加子Tab到嵌套TabControl
@@ -21068,7 +21070,7 @@ namespace MailConverter
             }
         }
 
-        private void LoadSavedOAuthAccountsToComboBox(ComboBox cmb)
+        public void LoadSavedOAuthAccountsToComboBox(ComboBox cmb)
         {
             if (cmb == null) return;
 
