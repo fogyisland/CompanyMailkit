@@ -18187,7 +18187,7 @@ namespace MailConverter
             }
         }
 
-        private string SyncContactsFromCsv(string filePath)
+        public string SyncContactsFromCsv(string filePath)
         {
             Serilog.Log.Information("========== 开始CSV联系人同步 ==========");
             Serilog.Log.Information("文件路径: {FilePath}", filePath);
@@ -18328,7 +18328,7 @@ namespace MailConverter
             return resultMsg;
         }
 
-        private string SyncContactsFromVcf(string filePath)
+        public string SyncContactsFromVcf(string filePath)
         {
             Serilog.Log.Information("========== 开始VCF联系人同步 ==========");
             Serilog.Log.Information("文件路径: {FilePath}", filePath);
@@ -18534,7 +18534,7 @@ namespace MailConverter
             }
         }
 
-        private string SyncCalendarFromIcs(string filePath)
+        public string SyncCalendarFromIcs(string filePath)
         {
             var icsContent = File.ReadAllText(filePath);
             int count = 0;
@@ -18591,7 +18591,7 @@ namespace MailConverter
             return $"同步完成，共 {count} 个日历事件";
         }
 
-        private string SyncCalendarFromVcs(string filePath)
+        public string SyncCalendarFromVcs(string filePath)
         {
             // VCS 格式解析
             var vcsContent = File.ReadAllText(filePath);
