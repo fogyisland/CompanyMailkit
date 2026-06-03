@@ -25,13 +25,16 @@ namespace MailConverter.Services.Calendars
         private Button btnStartSync;
         private ProgressBar progressSync;
         private Label lblSyncStatus;
+        private Label lblServerUrl;
+        private Label lblUsername;
+        private Label lblPassword;
+        private Label lblSourceFile;
 
-        private string _accessToken;
-        private Office365ImportService _office365Service;
-        private bool _isO365Connected;
-
-        public string CurrentEmail { get; private set; }
-        public bool IsConnected => _isO365Connected;
+        /// <summary>
+        /// 由 MainForm 在创建时注入,用于调用 BtnO365OAuthLogin_Click 等方法
+        /// (命名避开 UserControl 自身的只读 ParentForm 属性)
+        /// </summary>
+        public MainForm MainForm { get; set; }
 
         public SyncCalendarControl()
         {
@@ -78,6 +81,7 @@ namespace MailConverter.Services.Calendars
                 ForeColor = Color.White,
                 Name = "btnSyncCalendarLogin"
             };
+            btnOAuthLogin.Click += BtnOAuthLogin_Click;
 
             lblCurrentEmail = new Label
             {
@@ -110,15 +114,15 @@ namespace MailConverter.Services.Calendars
             cmbSourceType.SelectedIndex = 0;
             cmbSourceType.SelectedIndexChanged += CmbSourceType_SelectedIndexChanged;
 
-            var lblServerUrl = new Label { Text = "服务器:", Location = new Point(30, 240), AutoSize = true, Name = "lblSyncCalendarServer" };
+            lblServerUrl = new Label { Text = "服务器:", Location = new Point(30, 240), AutoSize = true, Name = "lblSyncCalendarServer" };
             txtServerUrl = new TextBox { Location = new Point(110, 238), Size = new Size(320, 22), Name = "txtSyncCalendarServerUrl" };
 
-            var lblUsername = new Label { Text = "用户名:", Location = new Point(30, 268), AutoSize = true, Name = "lblSyncCalendarUsername" };
+            lblUsername = new Label { Text = "用户名:", Location = new Point(30, 268), AutoSize = true, Name = "lblSyncCalendarUsername" };
             txtUsername = new TextBox { Location = new Point(110, 266), Size = new Size(180, 22), Name = "txtSyncCalendarUsername" };
-            var lblPassword = new Label { Text = "密码:", Location = new Point(310, 268), AutoSize = true, Name = "lblSyncCalendarPassword" };
+            lblPassword = new Label { Text = "密码:", Location = new Point(310, 268), AutoSize = true, Name = "lblSyncCalendarPassword" };
             txtPassword = new TextBox { Location = new Point(350, 266), Size = new Size(120, 22), UseSystemPasswordChar = true, Name = "txtSyncCalendarPassword" };
 
-            var lblSourceFile = new Label { Text = "本地文件:", Location = new Point(30, 240), AutoSize = true, Name = "lblSyncCalendarSourceFile" };
+            lblSourceFile = new Label { Text = "本地文件:", Location = new Point(30, 240), AutoSize = true, Name = "lblSyncCalendarSourceFile" };
             txtSourceFile = new TextBox { Location = new Point(110, 238), Size = new Size(270, 22), Name = "txtSyncCalendarSourceFile" };
             btnBrowse = new Button
             {
@@ -178,32 +182,193 @@ namespace MailConverter.Services.Calendars
             this.Controls.Add(lblSyncStatus);
         }
 
-        // 事件占位 - Task 12 集成到 MainForm 时填充实际逻辑
-        private void CmbSourceType_SelectedIndexChanged(object sender, EventArgs e) { }
-        private void BtnBrowse_Click(object sender, EventArgs e) { }
-        private void BtnStartSync_Click(object sender, EventArgs e) { }
-
-        // 由 MainForm 设置 OAuth 登录结果
-        public void SetOAuthResult(bool success, string email, string accessToken, Office365ImportService service)
+        private void UpdateControlsVisibility(int sourceType)
         {
-            _isO365Connected = success;
-            CurrentEmail = email;
-            _accessToken = accessToken;
-            _office365Service = service;
-            if (success)
+            if (sourceType == 0 || sourceType == 1)
             {
-                lblCurrentEmail.Text = email;
-                lblCurrentEmail.ForeColor = Color.Green;
-                lblSyncStatus.Text = "登录成功!";
-                lblSyncStatus.ForeColor = Color.Green;
+                // 本地文件
+                lblServerUrl.Visible = false;
+                txtServerUrl.Visible = false;
+                lblUsername.Visible = false;
+                txtUsername.Visible = false;
+                lblPassword.Visible = false;
+                txtPassword.Visible = false;
+                lblSourceFile.Visible = true;
+                txtSourceFile.Visible = true;
+                btnBrowse.Visible = true;
             }
             else
             {
-                lblCurrentEmail.Text = "未登录";
-                lblCurrentEmail.ForeColor = Color.Gray;
-                lblSyncStatus.Text = "登录失败,请重试";
-                lblSyncStatus.ForeColor = Color.Red;
+                // CalDAV
+                lblServerUrl.Visible = true;
+                txtServerUrl.Visible = true;
+                lblUsername.Visible = true;
+                txtUsername.Visible = true;
+                lblPassword.Visible = true;
+                txtPassword.Visible = true;
+                lblSourceFile.Visible = false;
+                txtSourceFile.Visible = false;
+                btnBrowse.Visible = false;
             }
+        }
+
+        // === 事件处理 ===
+
+        private void CmbSourceType_SelectedIndexChanged(object sender, EventArgs e)
+        {
+            UpdateControlsVisibility(cmbSourceType.SelectedIndex);
+        }
+
+        private void BtnBrowse_Click(object sender, EventArgs e)
+        {
+            using (var openFileDialog = new OpenFileDialog())
+            {
+                openFileDialog.Title = "选择日历文件";
+                openFileDialog.Filter = "所有支持格式|*.ics;*.vcs;*.msg|ICS文件|*.ics|VCS文件|*.vcs|MSG文件|*.msg";
+                openFileDialog.Multiselect = false;
+                if (openFileDialog.ShowDialog() == DialogResult.OK)
+                {
+                    txtSourceFile.Text = openFileDialog.FileName;
+                }
+            }
+        }
+
+        private void BtnOAuthLogin_Click(object sender, EventArgs e)
+        {
+            if (MainForm == null)
+            {
+                lblSyncStatus.Text = "未设置 MainForm,无法登录";
+                lblSyncStatus.ForeColor = Color.Red;
+                return;
+            }
+
+            // 将本控件的字段值同步到 MainForm (MainForm 的 OAuth 流程从其私有字段读取)
+            MainForm.SetO365TextFields(txtClientId.Text, txtTenantId.Text, txtEmail.Text);
+
+            // 触发 MainForm 的 OAuth 登录
+            MainForm.BtnO365OAuthLogin_Click(sender, e);
+
+            // 轮询 MainForm 的 OAuth 状态
+            var timer = new System.Windows.Forms.Timer { Interval = 3000 };
+            timer.Tick += (ts, te) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+                if (MainForm.IsO365OAuthConnected)
+                {
+                    lblCurrentEmail.Text = MainForm.O365OAuthEmail;
+                    lblCurrentEmail.ForeColor = Color.Green;
+                    lblSyncStatus.Text = "登录成功!";
+                    lblSyncStatus.ForeColor = Color.Green;
+                }
+                else
+                {
+                    lblSyncStatus.Text = "登录失败,请重试";
+                    lblSyncStatus.ForeColor = Color.Red;
+                }
+            };
+            timer.Start();
+        }
+
+        private void BtnStartSync_Click(object sender, EventArgs e)
+        {
+            if (MainForm == null)
+            {
+                lblSyncStatus.Text = "未设置 MainForm,无法同步";
+                lblSyncStatus.ForeColor = Color.Red;
+                return;
+            }
+
+            var sourceType = cmbSourceType.SelectedIndex;
+
+            // CalDAV 不需要选择源文件
+            if (sourceType != 2)
+            {
+                if (string.IsNullOrWhiteSpace(txtSourceFile.Text))
+                {
+                    lblSyncStatus.Text = "请先选择源文件";
+                    lblSyncStatus.ForeColor = Color.Red;
+                    return;
+                }
+            }
+
+            if (!MainForm.IsO365OAuthConnected || string.IsNullOrEmpty(MainForm.O365AccessToken))
+            {
+                lblSyncStatus.Text = "请先登录";
+                lblSyncStatus.ForeColor = Color.Red;
+                return;
+            }
+
+            // 确保 MainForm._office365Service 已连接
+            var o365Service = MainForm.Office365Service;
+            if (o365Service == null || !o365Service.IsOAuthConnected)
+            {
+                o365Service = new Office365ImportService();
+                if (!o365Service.ConnectWithOAuth(MainForm.O365OAuthEmail, MainForm.O365AccessToken))
+                {
+                    lblSyncStatus.Text = "OAuth2 连接失败,请重新登录";
+                    lblSyncStatus.ForeColor = Color.Red;
+                    return;
+                }
+                MainForm.SetO365Service(o365Service);
+            }
+
+            var filePath = txtSourceFile.Text;
+            var extension = string.IsNullOrEmpty(filePath) ? "" : Path.GetExtension(filePath).ToLower();
+
+            // 禁用按钮
+            btnStartSync.Enabled = false;
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    this.Invoke(new Action(() =>
+                    {
+                        lblSyncStatus.Text = "正在同步...";
+                        lblSyncStatus.ForeColor = Color.Blue;
+                        progressSync.Style = ProgressBarStyle.Marquee;
+                    }));
+
+                    string resultMessage = "";
+
+                    // 本地文件同步
+                    if (sourceType == 0 || sourceType == 1)
+                    {
+                        if (extension == ".ics")
+                            resultMessage = MainForm.SyncCalendarFromIcs(filePath);
+                        else if (extension == ".vcs")
+                            resultMessage = MainForm.SyncCalendarFromVcs(filePath);
+                        else
+                            resultMessage = "不支持的日历文件格式";
+                    }
+                    else if (sourceType == 2) // CalDAV
+                    {
+                        // CalDAV 服务暂未实现
+                        resultMessage = "CalDAV 日历同步功能暂未实现,目前仅支持本地文件 (ICS/VCS)";
+                    }
+
+                    // 完成后的UI更新
+                    this.Invoke(new Action(() =>
+                    {
+                        progressSync.Style = ProgressBarStyle.Continuous;
+                        lblSyncStatus.Text = resultMessage;
+                        lblSyncStatus.ForeColor = resultMessage.Contains("完成") ? Color.Green : Color.Red;
+                        btnStartSync.Enabled = true;
+                    }));
+                }
+                catch (Exception ex)
+                {
+                    this.Invoke(new Action(() =>
+                    {
+                        progressSync.Style = ProgressBarStyle.Continuous;
+                        lblSyncStatus.Text = $"同步失败: {ex.Message}";
+                        lblSyncStatus.ForeColor = Color.Red;
+                        btnStartSync.Enabled = true;
+                    }));
+                    Serilog.Log.Error(ex, "日历同步失败");
+                }
+            });
         }
     }
 }
