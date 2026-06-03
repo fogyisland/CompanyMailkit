@@ -14,6 +14,8 @@ using Azure.Identity;
 using Serilog;
 using Outlook = Microsoft.Office.Interop.Outlook;
 using Newtonsoft.Json.Linq;
+using MailConverter.Services.Contacts;
+using MailConverter.Services.Calendars;
 
 namespace MailConverter
 {
@@ -97,9 +99,33 @@ namespace MailConverter
         public string AppId => _clientId;
         public string ClientSecret => _clientSecret;
 
+        /// <summary>
+        /// 日志回调 (用于将导入过程中的日志消息传递到UI的日志框)
+        /// UI 可以设置此回调以接收 PstImportLogger 的同步输出
+        /// </summary>
+        public Action<string> LogCallback { get; set; }
+
         // 文件夹缓存：Key = "user@domain.com|FolderName", Value = FolderId
         private static ConcurrentDictionary<string, string> _folderCache = new ConcurrentDictionary<string, string>();
         private string _clientSecret;
+
+        /// <summary>
+        /// 输出日志: 写入 PstImportLogger 并触发 LogCallback
+        /// </summary>
+        private void EmitLog(string message)
+        {
+            PstImportLogger.Info(message);
+            LogCallback?.Invoke(message);
+        }
+
+        /// <summary>
+        /// 输出错误日志: 写入 PstImportLogger 并触发 LogCallback
+        /// </summary>
+        private void EmitLogError(string message, Exception ex = null)
+        {
+            PstImportLogger.Error(message, ex);
+            LogCallback?.Invoke("[错误] " + message);
+        }
 
         /// <summary>
         /// 使用用户名密码连接
@@ -149,6 +175,7 @@ namespace MailConverter
             {
                 _email = email;
                 _accessToken = accessToken;
+                _graphAccessToken = accessToken;
                 _isOAuth = true;
                 _password = null;
                 _domain = null;
@@ -161,8 +188,20 @@ namespace MailConverter
                 // 使用 OAuth 凭据
                 _service.Credentials = new OAuthCredentials(accessToken);
 
-                // 验证连接
+                // 验证 EWS 连接
                 Folder.Bind(_service, WellKnownFolderName.Inbox);
+
+                // 初始化 Graph 客户端 (使用同一 OAuth 访问令牌，aud=graph.microsoft.com)
+                try
+                {
+                    var credential = new OAuthAccessTokenCredential(accessToken);
+                    _graphClient = new GraphServiceClient(credential, new[] { "https://graph.microsoft.com/.default" });
+                    Log.Information("Graph 客户端初始化成功 (OAuth)");
+                }
+                catch (Exception gEx)
+                {
+                    Log.Warning(gEx, "Graph 客户端初始化失败: {Msg}", gEx.Message);
+                }
 
                 Log.Information("Office 365 OAuth2 连接成功");
                 return true;
@@ -178,6 +217,40 @@ namespace MailConverter
         /// 检查是否已通过 OAuth2 连接
         /// </summary>
         public bool IsOAuthConnected => _isOAuth && !string.IsNullOrEmpty(_accessToken);
+
+        /// <summary>
+        /// 使用 Graph API 列出指定用户的邮件文件夹 (使用 access token 创建临时客户端)
+        /// </summary>
+        public List<string> ListGraphMailFolders(string accessToken, string userEmail)
+        {
+            var folderNames = new List<string> { "Inbox", "Sent Items", "Drafts", "Deleted Items", "Junk Email", "Archive" };
+            try
+            {
+                if (string.IsNullOrEmpty(accessToken))
+                    throw new ArgumentException("访问令牌为空");
+
+                var credential = new OAuthAccessTokenCredential(accessToken);
+                using (var client = new GraphServiceClient(credential, new[] { "https://graph.microsoft.com/.default" }))
+                {
+                    var result = client.Users[userEmail].MailFolders.GetAsync().Result;
+                    if (result?.Value != null)
+                    {
+                        foreach (var folder in result.Value)
+                        {
+                            if (!string.IsNullOrEmpty(folder.DisplayName) && !folderNames.Contains(folder.DisplayName))
+                                folderNames.Add(folder.DisplayName);
+                        }
+                    }
+                }
+                Log.Information("Graph API 文件夹列表获取成功: {Count} 个文件夹 (用户: {User})", folderNames.Count, userEmail);
+                return folderNames;
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Graph API 列文件夹失败: {Msg}", ex.Message);
+                throw;
+            }
+        }
 
         /// <summary>
         /// 使用客户端密钥(Client Secret)连接 (应用身份验证)
@@ -458,14 +531,14 @@ namespace MailConverter
         {
             try
             {
-                PstImportLogger.Info($"导入邮件: {emlPath} -> {targetUserEmail}/{folderName}");
+                EmitLog($"导入邮件: {emlPath} -> {targetUserEmail}/{folderName}");
                 Log.Information("开始导入 EML: {Path} 到 {Email}, Folder: {Folder}", emlPath, targetUserEmail, folderName);
 
                 // 首先尝试使用 Graph API MIME 上传（更可靠）
                 Log.Information("尝试使用 Graph API MIME 上传...");
                 if (ImportEmlWithGraphMime(emlPath, targetUserEmail, folderName))
                 {
-                    PstImportLogger.Info($"  -> 成功! (Graph API MIME) 主题: {Path.GetFileName(emlPath)}, 文件夹: {folderName}");
+                    EmitLog($"  -> 成功! (Graph API MIME) 主题: {Path.GetFileName(emlPath)}, 文件夹: {folderName}");
                     return true;
                 }
                 Log.Warning("Graph API MIME 上传失败，尝试 EWS...");
@@ -473,7 +546,7 @@ namespace MailConverter
                 // 使用 MimeKit 解析 EML 文件
                 var mimeMessage = MimeKit.MimeMessage.Load(emlPath);
                 var subject = mimeMessage.Subject ?? "(无主题)";
-                PstImportLogger.Info($"  主题: {subject}, 发件人: {mimeMessage.From}, 附件: {mimeMessage.Attachments.Count()}");
+                EmitLog($"  主题: {subject}, 发件人: {mimeMessage.From}, 附件: {mimeMessage.Attachments.Count()}");
                 Log.Information("EML 解析完成, Subject={Subject}, From={From}, Attachments={Count}",
                     mimeMessage.Subject, mimeMessage.From, mimeMessage.Attachments.Count());
 
@@ -481,14 +554,25 @@ namespace MailConverter
                 if (_service == null)
                 {
                     Log.Error("EWS 服务未连接");
-                    PstImportLogger.Error("  -> 失败: EWS 服务未连接");
+                    EmitLogError("  -> 失败: EWS 服务未连接");
                     return false;
                 }
 
-                // 设置模拟用户 (Impersonation) - 这样可以访问目标用户的邮箱
-                // 使用应用程序权限时，必须设置 ImpersonatedUserId 才能访问其他用户的邮箱
-                _service.ImpersonatedUserId = new ImpersonatedUserId(ConnectingIdType.SmtpAddress, targetUserEmail);
-                Log.Information("已设置模拟用户: {Email}", targetUserEmail);
+                // 设置模拟用户 (Impersonation)
+                // 重要：OAuth 委托认证下，如果目标邮箱是认证用户自己的邮箱，不需要 Impersonation
+                // 只有应用程序权限才需要 Impersonation 访问其他用户的邮箱
+                if (_isOAuth && targetUserEmail == _email)
+                {
+                    // 委托认证 + 自己的邮箱：不需要 Impersonation
+                    _service.ImpersonatedUserId = null;
+                    Log.Information("OAuth 委托认证自己的邮箱，跳过 Impersonation");
+                }
+                else
+                {
+                    // 应用权限或不同用户：需要 Impersonation
+                    _service.ImpersonatedUserId = new ImpersonatedUserId(ConnectingIdType.SmtpAddress, targetUserEmail);
+                    Log.Information("已设置模拟用户: {Email}", targetUserEmail);
+                }
 
                 // 获取目标文件夹 - 使用默认文件夹而不是 FindFolders
                 FolderId targetFolderId = GetWellKnownFolderId(folderName);
@@ -578,6 +662,18 @@ namespace MailConverter
 
                 Log.Information("准备保存邮件到文件夹: {Folder}, TargetFolder: {Id}", folderName, targetFolderId?.ToString());
 
+                // 探测 EWS 写入权限: 尝试绑定目标文件夹 (Bind 失败时会抛出详细错误)
+                try
+                {
+                    var probeFolder = Folder.Bind(_service, targetFolderId).Result;
+                    EmitLog($"  -> EWS 目标文件夹验证: {probeFolder.DisplayName} (TotalCount={probeFolder.TotalCount})");
+                }
+                catch (Exception bindEx)
+                {
+                    EmitLogError($"  -> EWS 绑定文件夹失败 (可能缺少 EWS.AccessAsUser.All 写入权限): {bindEx.Message}");
+                    // 继续尝试保存，让 EWS 抛出更具体的错误
+                }
+
                 try
                 {
                     // 保存邮件到目标文件夹
@@ -605,13 +701,14 @@ namespace MailConverter
                             Log.Warning("更新邮件属性失败: {Msg}", updateEx.Message);
                         }
 
-                        PstImportLogger.Info($"  -> 成功! 主题: {subject}, 文件夹: {folderName}");
+                        EmitLog($"  -> 成功! 主题: {subject}, 文件夹: {folderName}");
                         Log.Information("EML 导入成功: {Subject}, Folder: {Folder}, EmailId: {Id}", email.Subject, folderName, email.Id.ToString());
                         return true;
                     }
                     else
                     {
                         Log.Warning("EML 导入可能失败，邮件ID为空: {Subject}", email.Subject);
+                        EmitLogError($"  -> 失败: email.Save() 返回但邮件ID为空 (主题: {email.Subject}, 文件夹: {folderName})");
                         return false;
                     }
                 }
@@ -620,7 +717,7 @@ namespace MailConverter
                     // 记录详细错误信息
                     var errorDetails = GetDetailedErrorMessage(saveEx);
                     Log.Error(saveEx, "保存邮件失败: {Subject}, Folder: {Folder}, Error: {Error}", email.Subject, folderName, errorDetails);
-                    PstImportLogger.Error($"  -> EWS保存失败，尝试Graph API MIME上传: {errorDetails}");
+                    EmitLogError($"  -> EWS保存失败，尝试Graph API MIME上传: {errorDetails}");
 
                     // 尝试使用 Graph API 的 MIME 上传方式作为备用方案
                     try
@@ -628,26 +725,26 @@ namespace MailConverter
                         Log.Information("尝试使用 Graph API MIME 上传: {Path}", emlPath);
                         if (ImportEmlWithGraphMime(emlPath, targetUserEmail, folderName))
                         {
-                            PstImportLogger.Info($"  -> Graph API MIME上传成功! 主题: {subject}, 文件夹: {folderName}");
+                            EmitLog($"  -> Graph API MIME上传成功! 主题: {subject}, 文件夹: {folderName}");
                             return true;
                         }
                         else
                         {
-                            PstImportLogger.Error($"  -> Graph API MIME上传也失败");
+                            EmitLogError("  -> Graph API MIME上传也失败");
                             return false;
                         }
                     }
                     catch (Exception mimeEx)
                     {
                         Log.Error(mimeEx, "Graph API MIME 上传也失败: {Path}", emlPath);
-                        PstImportLogger.Error($"  -> Graph API MIME上传异常: {mimeEx.Message}");
+                        EmitLogError($"  -> Graph API MIME上传异常: {mimeEx.Message}");
                         return false;
                     }
                 }
             }
             catch (Exception ex)
             {
-                PstImportLogger.Error($"  -> 异常: {ex.Message}", ex);
+                EmitLogError($"  -> 异常: {ex.Message}", ex);
                 Log.Error(ex, "Graph API 导入 EML 失败: {Path}", emlPath);
                 return false;
             }
@@ -662,74 +759,129 @@ namespace MailConverter
             {
                 if (string.IsNullOrWhiteSpace(folderName)) folderName = "Inbox";
 
-                // 1. 标准化文件夹名称
-                var normalizedName = folderName.Trim();
+                // 支持嵌套路径: "MyImport/Mail1" -> 依次在 根/MyImport 下找 Mail1
+                var segments = folderName.Split(new[] { '/', '\\' }, StringSplitOptions.RemoveEmptyEntries);
+                if (segments.Length == 0) segments = new[] { "Inbox" };
 
-                // 2. 检查缓存
-                string cacheKey = $"{userEmail}|{normalizedName}";
-                if (_folderCache.TryGetValue(cacheKey, out var cachedId))
-                {
-                    return cachedId;
-                }
+                string currentParentId = null;  // null = 邮箱根目录 (MailFolders 顶层)
+                string currentPath = "";
+                string finalId = null;
 
-                // 3. 标准文件夹直接返回
-                var wellKnownFolders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                for (int i = 0; i < segments.Length; i++)
                 {
-                    { "inbox", "inbox" },
-                    { "收件箱", "inbox" },
-                    { "sent", "sent" },
-                    { "sentitems", "sent" },
-                    { "已发送", "sent" },
-                    { "deleted", "deleteditems" },
-                    { "deleteditems", "deleteditems" },
-                    { "已删除", "deleteditems" },
-                    { "drafts", "drafts" },
-                    { "草稿", "drafts" },
-                    { "junk", "junkemail" },
-                    { "junkemail", "junkemail" },
-                    { "垃圾邮件", "junkemail" },
-                    { "archive", "archive" },
-                    { "archivefolderroot", "archive" },
-                    { "存档", "archive" }
-                };
+                    string segment = segments[i].Trim();
+                    currentPath = string.IsNullOrEmpty(currentPath) ? segment : currentPath + "/" + segment;
 
-                if (wellKnownFolders.TryGetValue(normalizedName.ToLower(), out var wellKnownId))
-                {
-                    _folderCache.TryAdd(cacheKey, wellKnownId);
-                    return wellKnownId;
-                }
-
-                // 4. 查找已存在的自定义文件夹
-                var folder = _graphClient.Users[userEmail].MailFolders
-                    .GetAsync(requestConfiguration => requestConfiguration.QueryParameters.Filter = $"displayName eq '{normalizedName}'")
-                    .Result;
-
-                string finalFolderId;
-                if (folder?.Value?.Count > 0)
-                {
-                    finalFolderId = folder.Value[0].Id;
-                }
-                else
-                {
-                    // 5. 创建新文件夹
-                    var newFolder = new Microsoft.Graph.Models.MailFolder
+                    // 1. 缓存优先 (整路径作为 key)
+                    string cacheKey = $"{userEmail}|{currentPath}";
+                    if (_folderCache.TryGetValue(cacheKey, out var cachedId))
                     {
-                        DisplayName = normalizedName
-                    };
-                    var created = _graphClient.Users[userEmail].MailFolders.PostAsync(newFolder).Result;
-                    finalFolderId = created?.Id ?? "inbox";
-                    Log.Information("为 {User} 创建了新文件夹: {Folder}", userEmail, normalizedName);
+                        finalId = cachedId;
+                        currentParentId = cachedId;
+                        continue;
+                    }
+
+                    // 2. 第一个段如果是已知文件夹 (inbox/sent/...), 走 well-known id
+                    if (i == 0)
+                    {
+                        var wellKnownFolders = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+                        {
+                            { "inbox", "inbox" },
+                            { "收件箱", "inbox" },
+                            { "sent", "sent" },
+                            { "sentitems", "sent" },
+                            { "已发送", "sent" },
+                            { "deleted", "deleteditems" },
+                            { "deleteditems", "deleteditems" },
+                            { "已删除", "deleteditems" },
+                            { "drafts", "drafts" },
+                            { "草稿", "drafts" },
+                            { "junk", "junkemail" },
+                            { "junkemail", "junkemail" },
+                            { "垃圾邮件", "junkemail" },
+                            { "archive", "archive" },
+                            { "archivefolderroot", "archive" },
+                            { "存档", "archive" }
+                        };
+                        if (wellKnownFolders.TryGetValue(segment.ToLower(), out var wellKnownId))
+                        {
+                            _folderCache.TryAdd(cacheKey, wellKnownId);
+                            finalId = wellKnownId;
+                            currentParentId = wellKnownId;
+                            continue;
+                        }
+                    }
+
+                    // 3. 在当前父目录下查找/创建
+                    string foundId = null;
+                    var escapedName = EscapeODataString(segment);
+
+                    if (currentParentId == null)
+                    {
+                        // 根目录: 使用 /mailFolders 顶层
+                        var folder = _graphClient.Users[userEmail].MailFolders
+                            .GetAsync(rc => rc.QueryParameters.Filter = $"displayName eq '{escapedName}'")
+                            .GetAwaiter().GetResult();
+
+                        if (folder?.Value?.Count > 0)
+                        {
+                            foundId = folder.Value[0].Id;
+                        }
+                        else
+                        {
+                            var newFolder = new Microsoft.Graph.Models.MailFolder { DisplayName = segment };
+                            var created = _graphClient.Users[userEmail].MailFolders.PostAsync(newFolder).GetAwaiter().GetResult();
+                            foundId = created?.Id;
+                            Log.Information("为 {User} 在根目录创建文件夹: {Folder}", userEmail, segment);
+                        }
+                    }
+                    else
+                    {
+                        // 子目录: 使用 /mailFolders/{parentId}/childFolders
+                        var folder = _graphClient.Users[userEmail].MailFolders[currentParentId].ChildFolders
+                            .GetAsync(rc => rc.QueryParameters.Filter = $"displayName eq '{escapedName}'")
+                            .GetAwaiter().GetResult();
+
+                        if (folder?.Value?.Count > 0)
+                        {
+                            foundId = folder.Value[0].Id;
+                        }
+                        else
+                        {
+                            var newFolder = new Microsoft.Graph.Models.MailFolder { DisplayName = segment };
+                            var created = _graphClient.Users[userEmail].MailFolders[currentParentId].ChildFolders
+                                .PostAsync(newFolder).GetAwaiter().GetResult();
+                            foundId = created?.Id;
+                            Log.Information("为 {User} 在 {Parent} 下创建子文件夹: {Folder}", userEmail, currentParentId, segment);
+                        }
+                    }
+
+                    if (string.IsNullOrEmpty(foundId))
+                    {
+                        Log.Warning("无法解析文件夹段: {Segment}, 路径: {Path}, 回退到 inbox", segment, currentPath);
+                        return "inbox";
+                    }
+
+                    _folderCache.TryAdd(cacheKey, foundId);
+                    currentParentId = foundId;
+                    finalId = foundId;
                 }
 
-                // 6. 存入缓存
-                _folderCache.TryAdd(cacheKey, finalFolderId);
-                return finalFolderId;
+                return finalId ?? "inbox";
             }
             catch (Exception ex)
             {
                 Log.Warning(ex, "获取文件夹ID失败，使用默认收件箱: {Folder}", folderName);
                 return "inbox";
             }
+        }
+
+        /// <summary>
+        /// 转义 OData filter 字符串中的单引号
+        /// </summary>
+        private static string EscapeODataString(string value)
+        {
+            return (value ?? "").Replace("'", "''");
         }
 
         public int ImportEmlFolder(string emlFolderPath, string targetFolder = "Inbox", IProgress<int> progress = null)
@@ -744,6 +896,13 @@ namespace MailConverter
             var files = Directory.GetFiles(emlFolderPath, "*.eml", SearchOption.AllDirectories);
 
             Log.Information("开始导入 {Count} 个 EML 文件", files.Length);
+
+            // 目标邮箱：使用 _email (登录时设置的)
+            string targetEmail = _email ?? "";
+            if (string.IsNullOrEmpty(targetEmail))
+            {
+                Log.Error("ImportEmlFolder: 目标邮箱为空 (_email 未设置)");
+            }
 
             foreach (var file in files)
             {
@@ -766,14 +925,21 @@ namespace MailConverter
                         }
                     }
 
-                    if (ImportEml(file, subFolder))
+                    // 优先使用 Graph API (OAuth 委托认证下 token aud=graph.microsoft.com，EWS 会 401)
+                    if (ImportEmlWithGraph(file, targetEmail, subFolder))
                     {
                         imported++;
                     }
-
-                    if (progress != null && imported % 10 == 0)
+                    else if (ImportEml(file, subFolder))
                     {
-                        progress.Report(imported);
+                        // 回退到 EWS (用于 password 模式)
+                        imported++;
+                    }
+
+                    if (progress != null && files.Length > 0)
+                    {
+                        int percentage = (int)(imported * 100L / files.Length);
+                        progress.Report(percentage);
                     }
                 }
                 catch (Exception ex)
@@ -1219,142 +1385,125 @@ namespace MailConverter
         }
 
         /// <summary>
-        /// 使用 Graph SDK 对象映射法导入 EML
+        /// 使用 Graph API 导入 EML (调用 Python 脚本 graph_deliver.py)
+        /// Python 脚本负责: 解析 EML (容忍畸形头), 查找/创建文件夹, MIME 上传 + Message 对象 fallback
         /// </summary>
         private bool ImportEmlWithGraphMime(string emlPath, string targetUserEmail, string folderName = "Inbox")
         {
             try
             {
-                if (_graphClient == null)
+                if (string.IsNullOrEmpty(_accessToken))
                 {
-                    Log.Error("Graph 客户端未初始化");
+                    Log.Error("Graph 访问令牌未初始化");
+                    EmitLogError("  -> Graph 访问令牌未初始化");
                     return false;
                 }
 
-                // 使用 MimeKit 解析 EML 文件
-                var mimeMessage = MimeKit.MimeMessage.Load(emlPath);
-                var subject = mimeMessage.Subject ?? "(无主题)";
+                // 优先使用专门的 Graph Token (Scope: https://graph.microsoft.com/.default)
+                // 回退到 EWS Token 仅作为兜底
+                var tokenForGraph = !string.IsNullOrEmpty(_graphAccessToken) ? _graphAccessToken : _accessToken;
 
-                Log.Information("Graph SDK 导入 - 主题: {Subject}, 附件: {Count}", subject, mimeMessage.Attachments.Count());
-
-                // 处理发件人 - 避免 unknown@unknown.com
-                string fromAddress = "no-reply@booming.one";
-                string fromName = "";
-                if (mimeMessage.From != null && mimeMessage.From.Count > 0)
+                // 找到 Python 可执行文件 (复用 Program.cs 的嵌入式 Python)
+                var pythonExe = Program.GetPythonExecutable();
+                if (string.IsNullOrEmpty(pythonExe) || !File.Exists(pythonExe))
                 {
-                    var from = mimeMessage.From[0] as MimeKit.MailboxAddress;
-                    if (from != null && !string.IsNullOrEmpty(from.Address) && !from.Address.Contains("unknown"))
-                    {
-                        fromAddress = from.Address;
-                        fromName = from.Name ?? "";
-                    }
+                    Log.Error("Python 环境未找到, 无法执行 Graph 投递");
+                    EmitLogError("  -> Python 环境未找到, 无法执行 Graph 投递");
+                    return ImportEmlWithEws(emlPath, targetUserEmail, folderName);
                 }
 
-                // 获取目标文件夹 ID
-                var folderId = GetGraphMailFolderId(targetUserEmail, folderName);
-                Log.Information("Graph SDK 导入 - 目标文件夹: {FolderId}", folderId);
-
-                // 构建 Graph Message 对象
-                var graphMessage = new Microsoft.Graph.Models.Message
+                // 找到 graph_deliver.py 脚本
+                var scriptPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "script", "graph_deliver.py");
+                if (!File.Exists(scriptPath))
                 {
-                    Subject = mimeMessage.Subject ?? "",
-                    Body = new Microsoft.Graph.Models.ItemBody
-                    {
-                        ContentType = !string.IsNullOrEmpty(mimeMessage.HtmlBody) ?
-                            Microsoft.Graph.Models.BodyType.Html :
-                            Microsoft.Graph.Models.BodyType.Text,
-                        Content = mimeMessage.HtmlBody ?? mimeMessage.TextBody ?? ""
-                    },
-                    // 设置接收和发送时间
-                    ReceivedDateTime = mimeMessage.Date != null ? mimeMessage.Date.DateTime : DateTime.UtcNow,
-                    SentDateTime = mimeMessage.Date != null ? mimeMessage.Date.DateTime : DateTime.UtcNow,
+                    Log.Error("graph_deliver.py 脚本不存在: {Path}", scriptPath);
+                    EmitLogError($"  -> graph_deliver.py 脚本不存在: {scriptPath}");
+                    return ImportEmlWithEws(emlPath, targetUserEmail, folderName);
+                }
 
-                    // 关键：显式设为非草稿
-                    IsDraft = false,
+                // 构造命令行参数:
+                // graph_deliver.py <token> <user_email> <eml_path> [target_folder]
+                // 总是传第4个参数, 空字符串代表"邮箱根目录"
+                var args = $"\"{scriptPath}\" \"{tokenForGraph}\" \"{targetUserEmail}\" \"{emlPath}\" \"{folderName ?? ""}\"";
 
-                    // 发件人
-                    From = new Microsoft.Graph.Models.Recipient
-                    {
-                        EmailAddress = new Microsoft.Graph.Models.EmailAddress
-                        {
-                            Name = fromName,
-                            Address = fromAddress
-                        }
-                    },
+                Log.Information("调用 graph_deliver.py: 文件夹={Folder}, EML={Path}", folderName, emlPath);
 
-                    // 关键：使用扩展属性去除"草稿"标记并设为"已读"
-                    // PidTagMessageFlags (0x0E07)
-                    // 值 1 (MSGFLAG_READ) 表示已读且非草稿
-                    SingleValueExtendedProperties = new List<Microsoft.Graph.Models.SingleValueLegacyExtendedProperty>
+                var startInfo = Program.CreatePythonStartInfo(pythonExe, args);
+                startInfo.RedirectStandardOutput = true;
+                startInfo.RedirectStandardError = true;
+                startInfo.UseShellExecute = false;
+                startInfo.CreateNoWindow = true;
+
+                using (var process = System.Diagnostics.Process.Start(startInfo))
+                {
+                    if (process == null)
                     {
-                        new Microsoft.Graph.Models.SingleValueLegacyExtendedProperty
-                        {
-                            Id = "Integer 0x0E07",
-                            Value = "1"
-                        }
+                        Log.Error("启动 Python 进程失败");
+                        EmitLogError("  -> 启动 Python 进程失败");
+                        return ImportEmlWithEws(emlPath, targetUserEmail, folderName);
                     }
-                };
 
-                // 添加收件人
-                if (mimeMessage.To != null && mimeMessage.To.Mailboxes.Any())
-                {
-                    graphMessage.ToRecipients = new List<Microsoft.Graph.Models.Recipient>();
-                    foreach (var to in mimeMessage.To.Mailboxes)
+                    // 异步读取输出避免死锁
+                    var stdoutTask = process.StandardOutput.ReadToEndAsync();
+                    var stderrTask = process.StandardError.ReadToEndAsync();
+
+                    if (!process.WaitForExit(60000)) // 60秒超时
                     {
-                        graphMessage.ToRecipients.Add(new Microsoft.Graph.Models.Recipient
+                        try { process.Kill(); } catch { }
+                        Log.Warning("graph_deliver.py 执行超时 (60s), 终止进程");
+                        EmitLogError("  -> graph_deliver.py 执行超时");
+                        return ImportEmlWithEws(emlPath, targetUserEmail, folderName);
+                    }
+
+                    var stdout = stdoutTask.GetAwaiter().GetResult();
+                    var stderr = stderrTask.GetAwaiter().GetResult();
+
+                    // 把 Python 的详细日志透传到 UI
+                    if (!string.IsNullOrEmpty(stdout))
+                    {
+                        foreach (var line in stdout.Split('\n'))
                         {
-                            EmailAddress = new Microsoft.Graph.Models.EmailAddress
+                            var trimmed = line.TrimEnd('\r');
+                            if (string.IsNullOrEmpty(trimmed)) continue;
+                            if (trimmed.StartsWith("RESULT:"))
                             {
-                                Name = to.Name,
-                                Address = to.Address
+                                // 结果行单独记录
+                                Log.Information("[graph_deliver] {Line}", trimmed);
                             }
-                        });
-                    }
-                }
-
-                // 添加抄送
-                if (mimeMessage.Cc != null && mimeMessage.Cc.Count > 0)
-                {
-                    graphMessage.CcRecipients = new List<Microsoft.Graph.Models.Recipient>();
-                    foreach (var cc in mimeMessage.Cc.Mailboxes)
-                    {
-                        graphMessage.CcRecipients.Add(new Microsoft.Graph.Models.Recipient
-                        {
-                            EmailAddress = new Microsoft.Graph.Models.EmailAddress
+                            else
                             {
-                                Name = cc.Name,
-                                Address = cc.Address
+                                EmitLog(trimmed);
+                                Log.Information("[graph_deliver] {Line}", trimmed);
                             }
-                        });
+                        }
                     }
+                    if (!string.IsNullOrEmpty(stderr))
+                    {
+                        foreach (var line in stderr.Split('\n'))
+                        {
+                            var trimmed = line.TrimEnd('\r');
+                            if (string.IsNullOrEmpty(trimmed)) continue;
+                            Log.Warning("[graph_deliver stderr] {Line}", trimmed);
+                        }
+                    }
+
+                    if (process.ExitCode == 0)
+                    {
+                        Log.Information("Graph 投递成功: {Path}", emlPath);
+                        return true;
+                    }
+
+                    Log.Warning("Graph 投递失败, ExitCode={Code}, Path: {Path}", process.ExitCode, emlPath);
+                    EmitLogError($"  -> Graph 投递失败 (ExitCode={process.ExitCode})");
+                    // Python 失败时尝试 EWS
+                    return ImportEmlWithEws(emlPath, targetUserEmail, folderName);
                 }
-
-                // 使用 Graph SDK 发送邮件到目标文件夹
-                var result = _graphClient.Users[targetUserEmail]
-                    .MailFolders[folderId]
-                    .Messages
-                    .PostAsync(graphMessage)
-                    .Result;
-
-                if (result != null)
-                {
-                    Log.Information("Graph SDK 导入成功: {Subject}, ID: {Id}", subject, result.Id);
-                    return true;
-                }
-
-                Log.Error("Graph SDK 导入返回空结果");
-                return false;
             }
             catch (Exception ex)
             {
-                // 打印详细的 Graph API 错误
-                var errorMsg = ex.Message;
-                if (ex.InnerException != null)
-                {
-                    errorMsg += " | Inner: " + ex.InnerException.Message;
-                }
-                Log.Error(ex, "Graph SDK 导入失败: {Path}, Error: {Error}", emlPath, errorMsg);
-                return false;
+                Log.Error(ex, "调用 graph_deliver.py 异常: {Path}, 尝试 EWS 方式", emlPath);
+                EmitLogError($"  -> 调用 graph_deliver.py 异常: {ex.Message}");
+                return ImportEmlWithEws(emlPath, targetUserEmail, folderName);
             }
         }
 
@@ -1476,6 +1625,7 @@ namespace MailConverter
             catch (Exception ex)
             {
                 Log.Error(ex, "EWS 导入失败: {Path}", emlPath);
+                EmitLogError($"  -> EWS 导入异常: {ex.Message}");
                 return false;
             }
         }
@@ -2009,181 +2159,6 @@ namespace MailConverter
         }
 
         /// <summary>
-        /// 批量导入PST联系人数据到目标邮箱 (直接模式，跳过VCF文件)
-        /// 使用 Client Secret + Graph Batch API，并发控制 + 指数退避重试
-        /// </summary>
-        /// <param name="targetEmail">目标用户邮箱</param>
-        /// <param name="contacts">PST联系人数据列表</param>
-        /// <param name="progressCallback">进度回调 (当前索引, 总数, 状态消息)</param>
-        /// <param name="maxDegreeOfParallelism">最大并发数，默认10</param>
-        /// <returns>成功导入数量</returns>
-        public async Task<int> ImportContactsBatchDirectAsync(
-            string targetEmail,
-            IEnumerable<PstExtractService.PstContactData> contacts,
-            Action<int, int, string> progressCallback = null,
-            int maxDegreeOfParallelism = 10)
-        {
-            if (_graphClient == null)
-            {
-                Program.BatchToO365Logger.Error("Graph客户端未初始化，请先调用 ConnectWithClientSecret");
-                return 0;
-            }
-
-            if (string.IsNullOrWhiteSpace(targetEmail))
-            {
-                Program.BatchToO365Logger.Error("目标邮箱不能为空");
-                return 0;
-            }
-
-            // 过滤出有邮箱的联系人
-            var contactList = contacts
-                .Where(c => !string.IsNullOrWhiteSpace(c.Email))
-                .ToList();
-
-            int totalCount = contactList.Count;
-            int successCount = 0;
-            int skippedCount = contacts.Count() - totalCount;
-
-            Program.BatchToO365Logger.Information("筛选后有邮箱联系人: {Valid}/{Total}, 跳过无邮箱: {Skipped}",
-                totalCount, contacts.Count(), skippedCount);
-
-            if (totalCount == 0)
-            {
-                Program.BatchToO365Logger.Warning("没有有邮箱的联系人需要导入");
-                return 0;
-            }
-
-            int currentIndex = 0;
-
-            Program.BatchToO365Logger.Information("开始直接批量导入联系人到 {Email}, 共 {Count} 个, 并发数: {Parallelism}",
-                targetEmail, totalCount, maxDegreeOfParallelism);
-
-            // 使用 SemaphoreSlim 控制并发数
-            var semaphore = new System.Threading.SemaphoreSlim(maxDegreeOfParallelism);
-            var lockObj = new object();
-
-            // 并行处理所有联系人
-            var tasks = contactList.Select(async contactData =>
-            {
-                await semaphore.WaitAsync();
-                try
-                {
-                    int index;
-                    lock (lockObj)
-                    {
-                        index = currentIndex++;
-                    }
-
-                    // 带重试的导入
-                    bool success = await ImportSingleContactDirectWithRetryAsync(targetEmail, contactData);
-                    if (success)
-                    {
-                        lock (lockObj) { successCount++; }
-                    }
-
-                    progressCallback?.Invoke(index + 1, totalCount, $"已导入 {index + 1}/{totalCount}");
-                    return success;
-                }
-                finally
-                {
-                    semaphore.Release();
-                }
-            });
-
-            await System.Threading.Tasks.Task.WhenAll(tasks);
-
-            Program.BatchToO365Logger.Information("直接批量导入完成: 成功 {Success}/{Total}", successCount, totalCount);
-            return successCount;
-        }
-
-        /// <summary>
-        /// 带重试的单联系人直接导入 (指数退避)
-        /// </summary>
-        private async Task<bool> ImportSingleContactDirectWithRetryAsync(string targetEmail, PstExtractService.PstContactData contactData, int maxRetries = 3)
-        {
-            for (int retry = 0; retry <= maxRetries; retry++)
-            {
-                try
-                {
-                    // 将PST联系人数据转换为Graph Contact
-                    var contact = ConvertToGraphContact(contactData);
-
-                    // 调用Graph API创建联系人
-                    await _graphClient.Users[targetEmail].Contacts.PostAsync(contact);
-
-                    Program.BatchToO365Logger.Information("联系人创建成功: {Name}", contact.DisplayName ?? "Unknown");
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    bool isThrottled = IsThrottledException(ex);
-
-                    if (isThrottled && retry < maxRetries)
-                    {
-                        int delaySeconds = (int)Math.Pow(2, retry);
-                        Program.BatchToO365Logger.Warning("限流 (429)，{Delay} 秒后重试 (第 {Retry}/{Max} 次): {Name}",
-                            delaySeconds, retry + 1, maxRetries, contactData.DisplayName);
-                        await System.Threading.Tasks.Task.Delay(delaySeconds * 1000);
-                    }
-                    else
-                    {
-                        Program.BatchToO365Logger.Error(ex, "导入联系人失败 (重试 {Retry}/{Max}): {Name}",
-                            retry, maxRetries, contactData.DisplayName);
-                        return false;
-                    }
-                }
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// 将PST联系人数据转换为Graph Contact模型
-        /// </summary>
-        private Microsoft.Graph.Models.Contact ConvertToGraphContact(PstExtractService.PstContactData data)
-        {
-            var contact = new Microsoft.Graph.Models.Contact();
-
-            // 姓名
-            if (!string.IsNullOrWhiteSpace(data.DisplayName))
-                contact.DisplayName = data.DisplayName;
-            else if (!string.IsNullOrWhiteSpace(data.Email))
-                contact.DisplayName = data.Email;
-            else if (!string.IsNullOrWhiteSpace(data.CompanyName))
-                contact.DisplayName = data.CompanyName;
-            else
-                contact.DisplayName = "Unknown Contact";
-
-            contact.GivenName = data.FirstName ?? "";
-            contact.Surname = data.LastName ?? "";
-            contact.MiddleName = data.MiddleName ?? "";
-            contact.Title = data.Title ?? "";
-
-            // 公司信息
-            contact.CompanyName = data.CompanyName ?? "";
-            contact.Department = data.Department ?? "";
-            contact.JobTitle = data.JobTitle ?? "";
-
-            // 备注 - 包含邮箱和电话信息
-            var notes = new StringBuilder();
-            if (!string.IsNullOrWhiteSpace(data.PersonalNotes))
-                notes.AppendLine(data.PersonalNotes);
-            if (!string.IsNullOrWhiteSpace(data.Email))
-                notes.AppendLine($"Email: {data.Email}");
-            if (!string.IsNullOrWhiteSpace(data.Phone))
-                notes.AppendLine($"Phone: {data.Phone}");
-            if (!string.IsNullOrWhiteSpace(data.MobilePhone))
-                notes.AppendLine($"Mobile: {data.MobilePhone}");
-            if (notes.Length > 0)
-                contact.PersonalNotes = notes.ToString().TrimEnd();
-
-            // 生日
-            if (data.Birthday.HasValue)
-                contact.Birthday = data.Birthday.Value;
-
-            return contact;
-        }
-
-        /// <summary>
         /// 解析VCF文件为Graph Contact对象
         /// </summary>
         private Microsoft.Graph.Models.Contact ParseVcfFile(string vcfFilePath)
@@ -2315,261 +2290,35 @@ namespace MailConverter
             }
         }
 
+        // ========== 联系人 facade (转发到 ContactSyncService) ==========
+
+        /// <summary>
+        /// 批量导入PST联系人数据到目标邮箱 (直接模式，跳过VCF文件)
+        /// </summary>
+        public async Task<int> ImportContactsBatchDirectAsync(
+            string targetEmail,
+            IEnumerable<ContactData> contacts,
+            Action<int, int, string> progressCallback = null,
+            int maxDegreeOfParallelism = 10)
+        {
+            return await ContactSyncService.ImportContactsBatchDirectAsync(
+                _graphClient, targetEmail, contacts, progressCallback, maxDegreeOfParallelism);
+        }
+
+        // ========== 日历 facade (转发到 CalendarSyncService) ==========
+
         /// <summary>
         /// 批量导入PST日历数据到目标邮箱 (直接模式，跳过ICS文件)
-        /// 使用 Client Secret + Graph Batch API，并发控制 + 指数退避重试
         /// </summary>
         public async Task<int> ImportCalendarBatchDirectAsync(
             string targetEmail,
-            IEnumerable<PstExtractService.PstCalendarData> calendars,
+            IEnumerable<CalendarData> calendars,
             Action<int, int, string> progressCallback = null,
             int maxDegreeOfParallelism = 10,
             string timeZone = "China Standard Time")
         {
-            if (_graphClient == null)
-            {
-                Program.BatchToO365Logger.Error("Graph客户端未初始化，请先调用 ConnectWithClientSecret");
-                return 0;
-            }
-
-            if (string.IsNullOrWhiteSpace(targetEmail))
-            {
-                Program.BatchToO365Logger.Error("目标邮箱不能为空");
-                return 0;
-            }
-
-            // 过滤出有主题和时间的日历事件
-            var calendarList = calendars
-                .Where(c => !string.IsNullOrWhiteSpace(c.Subject) && c.StartTime.HasValue)
-                .ToList();
-
-            int totalCount = calendarList.Count;
-            int skippedCount = calendars.Count() - totalCount;
-
-            Program.BatchToO365Logger.Information("筛选后有效日历: {Valid}/{Total}, 跳过无效: {Skipped}",
-                totalCount, calendars.Count(), skippedCount);
-
-            if (totalCount == 0)
-            {
-                Program.BatchToO365Logger.Warning("没有有效的日历事件需要导入");
-                return 0;
-            }
-
-            int successCount = 0;
-            int currentIndex = 0;
-
-            Program.BatchToO365Logger.Information("开始直接批量导入日历到 {Email}, 共 {Count} 个, 并发数: {Parallelism}",
-                targetEmail, totalCount, maxDegreeOfParallelism);
-
-            var semaphore = new System.Threading.SemaphoreSlim(maxDegreeOfParallelism);
-            var lockObj = new object();
-
-            var tasks = calendarList.Select(async calendarData =>
-            {
-                await semaphore.WaitAsync();
-                try
-                {
-                    int index;
-                    lock (lockObj)
-                    {
-                        index = currentIndex++;
-                    }
-
-                    bool success = await ImportSingleCalendarDirectWithRetryAsync(targetEmail, calendarData, timeZone);
-                    if (success)
-                    {
-                        lock (lockObj) { successCount++; }
-                    }
-
-                    progressCallback?.Invoke(index + 1, totalCount, $"已导入 {index + 1}/{totalCount}");
-                    return success;
-                }
-                finally
-                {
-                    semaphore.Release();
-                }
-            });
-
-            await System.Threading.Tasks.Task.WhenAll(tasks);
-
-            Program.BatchToO365Logger.Information("直接批量导入日历完成: 成功 {Success}/{Total}", successCount, totalCount);
-            return successCount;
-        }
-
-        private async Task<bool> ImportSingleCalendarDirectWithRetryAsync(string targetEmail, PstExtractService.PstCalendarData calendarData, string timeZone, int maxRetries = 3)
-        {
-            for (int retry = 0; retry <= maxRetries; retry++)
-            {
-                try
-                {
-                    var evt = ConvertToGraphEvent(calendarData, timeZone);
-                    await _graphClient.Users[targetEmail].Calendar.Events.PostAsync(evt);
-
-                    Program.BatchToO365Logger.Information("日历创建成功: {Subject}", evt.Subject ?? "Unknown");
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    bool isThrottled = IsThrottledException(ex);
-
-                    if (isThrottled && retry < maxRetries)
-                    {
-                        int delaySeconds = (int)Math.Pow(2, retry);
-                        Program.BatchToO365Logger.Warning("限流 (429)，{Delay} 秒后重试 (第 {Retry}/{Max} 次): {Subject}",
-                            delaySeconds, retry + 1, maxRetries, calendarData.Subject);
-                        await System.Threading.Tasks.Task.Delay(delaySeconds * 1000);
-                    }
-                    else
-                    {
-                        Program.BatchToO365Logger.Error(ex, "导入日历失败 (重试 {Retry}/{Max}): {Subject}",
-                            retry, maxRetries, calendarData.Subject);
-                        return false;
-                    }
-                }
-            }
-            return false;
-        }
-
-        /// <summary>
-        /// 将 UTC 偏移格式 (如 "UTC+8") 转换为 IANA 时区名称 (如 "China Standard Time")
-        /// Graph API DateTimeTimeZone.TimeZone 需要使用 IANA 时区名称
-        /// </summary>
-        private string ConvertToIanaTimeZone(string utcOffset)
-        {
-            if (string.IsNullOrWhiteSpace(utcOffset)) return "UTC";
-
-            // UTC 偏移格式映射到 IANA 时区
-            var offsetToTimeZone = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                { "UTC-12", "Dateline Standard Time" },
-                { "UTC-11", "UTC-11" },
-                { "UTC-10", "Hawaiian Standard Time" },
-                { "UTC-9", "Alaskan Standard Time" },
-                { "UTC-8", "Pacific Standard Time" },
-                { "UTC-7", "Mountain Standard Time" },
-                { "UTC-6", "Central Standard Time" },
-                { "UTC-5", "Eastern Standard Time" },
-                { "UTC-4", "Atlantic Standard Time" },
-                { "UTC-3", "SA Eastern Standard Time" },
-                { "UTC-2", "Mid-Atlantic Standard Time" },
-                { "UTC-1", "Azores Standard Time" },
-                { "UTC", "UTC" },
-                { "UTC+1", "Romance Standard Time" },
-                { "UTC+2", "Egypt Standard Time" },
-                { "UTC+3", "Russian Standard Time" },
-                { "UTC+4", "Arabian Standard Time" },
-                { "UTC+5", "West Asia Standard Time" },
-                { "UTC+5:30", "India Standard Time" },
-                { "UTC+6", "Central Asia Standard Time" },
-                { "UTC+6:30", "Myanmar Standard Time" },
-                { "UTC+7", "SE Asia Standard Time" },
-                { "UTC+8", "China Standard Time" },  // 中国标准时间 (北京)
-                { "UTC+9", "Tokyo Standard Time" },
-                { "UTC+9:30", "AUS Central Standard Time" },
-                { "UTC+10", "AUS Eastern Standard Time" },
-                { "UTC+11", "Central Pacific Standard Time" },
-                { "UTC+12", "New Zealand Standard Time" }
-            };
-
-            // 尝试直接匹配
-            if (offsetToTimeZone.TryGetValue(utcOffset, out string ianaZone))
-            {
-                Program.BatchToO365Logger.Debug("时区转换: {Input} -> {Output}", utcOffset, ianaZone);
-                return ianaZone;
-            }
-
-            // 如果匹配不到，返回 UTC
-            Program.BatchToO365Logger.Warning("未知的时区格式: {Input}, 使用 UTC", utcOffset);
-            return "UTC";
-        }
-
-        private Microsoft.Graph.Models.Event ConvertToGraphEvent(PstExtractService.PstCalendarData data, string timeZone = "China Standard Time")
-        {
-            var evt = new Microsoft.Graph.Models.Event();
-
-            evt.Subject = data.Subject ?? "";
-            evt.Body = new Microsoft.Graph.Models.ItemBody
-            {
-                ContentType = Microsoft.Graph.Models.BodyType.Text,
-                Content = data.Body ?? ""
-            };
-            evt.Location = new Microsoft.Graph.Models.Location
-            {
-                DisplayName = data.Location ?? ""
-            };
-
-            // 将 UTC 偏移格式转换为 IANA 时区名称 (Graph API 需要)
-            string ianaTimeZone = ConvertToIanaTimeZone(timeZone);
-
-            if (data.StartTime.HasValue)
-            {
-                var startTime = data.StartTime.Value;
-                evt.Start = new Microsoft.Graph.Models.DateTimeTimeZone
-                {
-                    DateTime = startTime.ToString("yyyy-MM-ddTHH:mm:ss"),
-                    TimeZone = ianaTimeZone
-                };
-            }
-
-            if (data.EndTime.HasValue)
-            {
-                var endTime = data.EndTime.Value;
-                evt.End = new Microsoft.Graph.Models.DateTimeTimeZone
-                {
-                    DateTime = endTime.ToString("yyyy-MM-ddTHH:mm:ss"),
-                    TimeZone = ianaTimeZone
-                };
-            }
-
-            evt.IsAllDay = data.IsAllDayEvent;
-
-            // 防止向与会者发送通知邮件 (静默迁移)
-            evt.ResponseRequested = false;
-
-            if (data.ReminderSet && !string.IsNullOrWhiteSpace(data.ReminderMinutesBeforeStart))
-            {
-                evt.ReminderMinutesBeforeStart = int.TryParse(data.ReminderMinutesBeforeStart, out int minutes) ? minutes : 30;
-                evt.IsReminderOn = true;
-            }
-
-            // 处理与会者
-            if (!string.IsNullOrWhiteSpace(data.RequiredAttendees))
-            {
-                evt.Attendees = new List<Microsoft.Graph.Models.Attendee>();
-                var requiredList = data.RequiredAttendees.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var attendee in requiredList)
-                {
-                    var email = attendee.Trim();
-                    if (!string.IsNullOrWhiteSpace(email) && email.Contains("@"))
-                    {
-                        evt.Attendees.Add(new Microsoft.Graph.Models.Attendee
-                        {
-                            EmailAddress = new Microsoft.Graph.Models.EmailAddress { Address = email },
-                            Type = Microsoft.Graph.Models.AttendeeType.Required
-                        });
-                    }
-                }
-            }
-
-            if (!string.IsNullOrWhiteSpace(data.OptionalAttendees))
-            {
-                if (evt.Attendees == null) evt.Attendees = new List<Microsoft.Graph.Models.Attendee>();
-                var optionalList = data.OptionalAttendees.Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries);
-                foreach (var attendee in optionalList)
-                {
-                    var email = attendee.Trim();
-                    if (!string.IsNullOrWhiteSpace(email) && email.Contains("@"))
-                    {
-                        evt.Attendees.Add(new Microsoft.Graph.Models.Attendee
-                        {
-                            EmailAddress = new Microsoft.Graph.Models.EmailAddress { Address = email },
-                            Type = Microsoft.Graph.Models.AttendeeType.Optional
-                        });
-                    }
-                }
-            }
-
-            return evt;
+            return await CalendarSyncService.ImportCalendarBatchDirectAsync(
+                _graphClient, targetEmail, calendars, progressCallback, maxDegreeOfParallelism, timeZone);
         }
     }
 
@@ -2577,5 +2326,31 @@ namespace MailConverter
     {
         public string Name { get; set; }
         public string Address { get; set; }
+    }
+
+    /// <summary>
+    /// 使用现有 OAuth 访问令牌的 Graph 凭据 (基于 Azure.Core.TokenCredential)
+    /// (避免使用 InteractiveBrowserCredential / UsernamePasswordCredential 触发额外的用户交互)
+    /// </summary>
+    public class OAuthAccessTokenCredential : Azure.Core.TokenCredential
+    {
+        private readonly string _accessToken;
+        private readonly DateTimeOffset _expiresOn;
+
+        public OAuthAccessTokenCredential(string accessToken, DateTimeOffset? expiresOn = null)
+        {
+            _accessToken = accessToken;
+            _expiresOn = expiresOn ?? DateTimeOffset.UtcNow.AddHours(1);
+        }
+
+        public override Azure.Core.AccessToken GetToken(Azure.Core.TokenRequestContext requestContext, System.Threading.CancellationToken cancellationToken = default)
+        {
+            return new Azure.Core.AccessToken(_accessToken, _expiresOn);
+        }
+
+        public override System.Threading.Tasks.ValueTask<Azure.Core.AccessToken> GetTokenAsync(Azure.Core.TokenRequestContext requestContext, System.Threading.CancellationToken cancellationToken = default)
+        {
+            return new System.Threading.Tasks.ValueTask<Azure.Core.AccessToken>(new Azure.Core.AccessToken(_accessToken, _expiresOn));
+        }
     }
 }
