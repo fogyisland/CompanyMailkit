@@ -4,6 +4,8 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using Serilog;
+using MailConverter.Services.Calendars;
+using MailConverter.Services.Contacts;
 using Outlook = Microsoft.Office.Interop.Outlook;
 
 namespace MailConverter
@@ -68,7 +70,8 @@ namespace MailConverter
                 if (targetFolder == null) return false;
 
                 int totalExtracted = 0;
-                ExtractFolder(targetFolder, outputDir, ref totalExtracted, progress);
+                // 标记 PST 根目录：根目录下的邮件直接放入 basePath，根目录本身不创建子目录
+                ExtractFolder(targetFolder, outputDir, ref totalExtracted, progress, isPstRoot: true);
 
                 Log.Information("提取完成，共计: {Count} 封邮件", totalExtracted);
                 return true;
@@ -84,15 +87,18 @@ namespace MailConverter
             }
         }
 
-        private void ExtractFolder(Outlook.Folder folder, string basePath, ref int totalCount, IProgress<int> progress)
+        private void ExtractFolder(Outlook.Folder folder, string basePath, ref int totalCount, IProgress<int> progress, bool isPstRoot = false)
         {
             string folderName = folder.Name;
-            if (folderName == "Outlook Data File")
+            // PST 根目录不创建子目录（处理中文/英文/日文等不同语言的 "Outlook Data File"）
+            if (isPstRoot || folderName == "Outlook Data File")
+            {
                 folderName = "";
+            }
 
             string folderPath = string.IsNullOrEmpty(folderName) ? basePath : Path.Combine(basePath, CleanFileName(folderName));
 
-            if (!string.IsNullOrEmpty(folderName) && folderName != "Outlook Data File")
+            if (!string.IsNullOrEmpty(folderName))
             {
                 Directory.CreateDirectory(folderPath);
             }
@@ -173,6 +179,57 @@ namespace MailConverter
 
                 // 4. Date (符合 RFC 2822 标准)
                 sb.AppendLine($"Date: {GetRfc2822Date(mailItem)}");
+
+                // 4.1 X-Original-Received-Time: 保留 PST 中的原始接收时间
+                // 导入到 O365 时 Graph API 的 ReceivedDateTime 才能正确反映邮件的实际接收时间
+                DateTime? extractedReceivedTime = null;
+                string receivedTimeSource = "";
+                try
+                {
+                    DateTime receivedTime = mailItem.ReceivedTime;
+                    if (receivedTime.Year >= 1990 && receivedTime.Year <= 2100)
+                    {
+                        extractedReceivedTime = receivedTime;
+                        receivedTimeSource = "ReceivedTime";
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning("mailItem.ReceivedTime 读取失败: {Msg}", ex.Message);
+                }
+
+                // 兜底: 使用 MAPI 属性 PR_MESSAGE_DELIVERY_TIME (0x0E0F0003)
+                if (!extractedReceivedTime.HasValue)
+                {
+                    try
+                    {
+                        var propAccessor = mailItem.PropertyAccessor;
+                        var deliveryTime = propAccessor.GetProperty("http://schemas.microsoft.com/mapi/proptag/0x0E0F0003");
+                        if (deliveryTime is DateTime dt && dt.Year >= 1990 && dt.Year <= 2100)
+                        {
+                            extractedReceivedTime = dt;
+                            receivedTimeSource = "PR_MESSAGE_DELIVERY_TIME";
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning("PR_MESSAGE_DELIVERY_TIME 读取失败: {Msg}", ex.Message);
+                    }
+                }
+
+                if (extractedReceivedTime.HasValue)
+                {
+                    // 用 UTC 格式 (Z) 写入，避免后续解析时区歧义
+                    DateTime utcReceived = extractedReceivedTime.Value.Kind == DateTimeKind.Utc
+                        ? extractedReceivedTime.Value
+                        : extractedReceivedTime.Value.ToUniversalTime();
+                    sb.AppendLine($"X-Original-Received-Time: {utcReceived.ToString("yyyy-MM-ddTHH:mm:ssZ", System.Globalization.CultureInfo.InvariantCulture)}");
+                    Log.Debug("写入 X-Original-Received-Time: {Time} (来源: {Source})", utcReceived, receivedTimeSource);
+                }
+                else
+                {
+                    Log.Warning("未能获取邮件接收时间: {Subject}", mailItem.Subject ?? "(无主题)");
+                }
 
                 // 5. Message-ID
                 string entryId = GetProperty(mailItem, "EntryID");
@@ -360,622 +417,21 @@ namespace MailConverter
             return name.Length > 100 ? name.Substring(0, 100) : name;
         }
 
-        /// <summary>
-        /// 从PST文件中提取联系人到VCF格式
-        /// </summary>
+        // 联系人 facade
         public bool ExtractContactsToVcf(string pstPath, string outputDir, IProgress<int> progress = null)
         {
-            Log.Information("开始提取 PST 联系人: {PstPath}", pstPath);
-
-            if (!File.Exists(pstPath))
-            {
-                Log.Error("PST 文件不存在: {Path}", pstPath);
-                return false;
-            }
-
-            Directory.CreateDirectory(outputDir);
-            Outlook.Application outlookApp = null;
-            Outlook.NameSpace ns = null;
-
-            try
-            {
-                try
-                {
-                    outlookApp = (Outlook.Application)Marshal.GetActiveObject("Outlook.Application");
-                }
-                catch
-                {
-                    outlookApp = new Outlook.Application();
-                    System.Threading.Thread.Sleep(5000);
-                }
-
-                ns = outlookApp.GetNamespace("MAPI");
-
-                // 打开PST文件
-                var pstFolder = ns.Folders.Add(pstPath, Type.Missing) as Outlook.Folder;
-                if (pstFolder == null)
-                {
-                    Log.Error("无法打开 PST 文件: {Path}", pstPath);
-                    return false;
-                }
-
-                // 遍历文件夹查找联系人
-                int contactCount = 0;
-                ExtractContactsRecursive(pstFolder, outputDir, ref contactCount, progress);
-
-                Log.Information("联系人提取完成，共 {Count} 个", contactCount);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "提取 PST 联系人失败: {Path}", pstPath);
-                return false;
-            }
-            finally
-            {
-                try { if (ns != null) Marshal.ReleaseComObject(ns); } catch { }
-                try { if (outlookApp != null) Marshal.ReleaseComObject(outlookApp); } catch { }
-            }
+            return ContactSyncService.ExtractContactsToVcf(pstPath, outputDir, progress);
         }
 
-        /// <summary>
-        /// 从PST文件中提取联系人到内存 (跳过VCF文件，直接用于Graph同步)
-        /// </summary>
-        public List<PstContactData> ExtractContactsFromPst(string pstPath, IProgress<int> progress = null)
+        public List<ContactData> ExtractContactsFromPst(string pstPath, IProgress<int> progress = null)
         {
-            Program.BatchToO365Logger.Information("开始提取 PST 联系人(直接模式): {PstPath}", pstPath);
-
-            var contacts = new List<PstContactData>();
-
-            if (!File.Exists(pstPath))
-            {
-                Program.BatchToO365Logger.Error("PST 文件不存在: {Path}", pstPath);
-                return contacts;
-            }
-
-            Outlook.Application outlookApp = null;
-            Outlook.NameSpace ns = null;
-
-            try
-            {
-                try
-                {
-                    outlookApp = (Outlook.Application)Marshal.GetActiveObject("Outlook.Application");
-                }
-                catch
-                {
-                    outlookApp = new Outlook.Application();
-                    System.Threading.Thread.Sleep(5000);
-                }
-
-                ns = outlookApp.GetNamespace("MAPI");
-                Outlook.Folder pstFolder = null;
-
-                // 使用 AddStoreEx 挂载 PST 文件
-                try
-                {
-                    ns.AddStoreEx(pstPath, Outlook.OlStoreType.olStoreUnicode);
-                }
-                catch (Exception ex)
-                {
-                    Program.BatchToO365Logger.Warning("添加 Store 失败，可能已挂载: {Msg}", ex.Message);
-                }
-
-                // 寻找对应的 Folder
-                foreach (Outlook.Folder folder in ns.Folders)
-                {
-                    try
-                    {
-                        if (folder.Store != null && !string.IsNullOrEmpty(folder.Store.FilePath))
-                        {
-                            if (Path.GetFullPath(folder.Store.FilePath).Equals(Path.GetFullPath(pstPath), StringComparison.OrdinalIgnoreCase))
-                            {
-                                pstFolder = folder;
-                                break;
-                            }
-                        }
-                    }
-                    catch { }
-                }
-
-                if (pstFolder == null)
-                {
-                    Program.BatchToO365Logger.Error("无法找到 PST 文件对应的 Folder: {Path}", pstPath);
-                    return contacts;
-                }
-
-                // 遍历文件夹提取联系人
-                ExtractContactsRecursiveToMemory(pstFolder, contacts, progress);
-
-                Program.BatchToO365Logger.Information("联系人提取完成，共 {Count} 个", contacts.Count);
-                return contacts;
-            }
-            catch (Exception ex)
-            {
-                Program.BatchToO365Logger.Error(ex, "提取 PST 联系人失败: {Path}", pstPath);
-                return contacts;
-            }
-            finally
-            {
-                try { if (ns != null) Marshal.ReleaseComObject(ns); } catch { }
-                try { if (outlookApp != null) Marshal.ReleaseComObject(outlookApp); } catch { }
-            }
+            return ContactSyncService.ExtractContactsFromPst(pstPath, progress);
         }
 
-        private void ExtractContactsRecursiveToMemory(Outlook.Folder folder, List<PstContactData> contacts, IProgress<int> progress)
-        {
-            try
-            {
-                Outlook.Items items = folder.Items;
-                for (int i = 1; i <= items.Count; i++)
-                {
-                    object item = null;
-                    try
-                    {
-                        item = items[i];
-                        if (item is Outlook.ContactItem contact)
-                        {
-                            try
-                            {
-                                var contactData = new PstContactData
-                                {
-                                    DisplayName = contact.FullName ?? "",
-                                    FirstName = contact.FirstName ?? "",
-                                    LastName = contact.LastName ?? "",
-                                    MiddleName = contact.MiddleName ?? "",
-                                    Title = contact.Title ?? "",
-                                    Suffix = contact.Suffix ?? "",
-                                    Email = contact.Email1Address ?? "",
-                                    Email2 = contact.Email2Address ?? "",
-                                    Email3 = contact.Email3Address ?? "",
-                                    Phone = contact.PrimaryTelephoneNumber ?? "",
-                                    Phone2 = contact.BusinessTelephoneNumber ?? "",
-                                    MobilePhone = contact.MobileTelephoneNumber ?? "",
-                                    CompanyName = contact.CompanyName ?? "",
-                                    Department = contact.Department ?? "",
-                                    JobTitle = contact.JobTitle ?? "",
-                                    Birthday = contact.Birthday,
-                                    PersonalNotes = contact.Body ?? ""
-                                };
-
-                                // 处理地址
-                                if (contact.BusinessAddress != null)
-                                    contactData.BusinessAddress = contact.BusinessAddress;
-
-                                contacts.Add(contactData);
-                                progress?.Report(contacts.Count);
-                            }
-                            catch (Exception ex)
-                            {
-                                Program.BatchToO365Logger.Warning(ex, "提取联系人失败: {Name}", contact.FullName);
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Program.BatchToO365Logger.Warning(ex, "处理联系人失败");
-                    }
-                    finally { if (item != null) Marshal.ReleaseComObject(item); }
-                }
-                Marshal.ReleaseComObject(items);
-            }
-            catch (Exception ex)
-            {
-                Program.BatchToO365Logger.Warning(ex, "遍历文件夹失败: {Name}", folder.Name);
-            }
-
-            // 递归处理子文件夹
-            try
-            {
-                foreach (Outlook.Folder subFolder in folder.Folders)
-                {
-                    ExtractContactsRecursiveToMemory(subFolder, contacts, progress);
-                    Marshal.ReleaseComObject(subFolder);
-                }
-            }
-            catch { }
-        }
-
-        private void ExtractContactsRecursive(Outlook.Folder folder, string outputDir, ref int count, IProgress<int> progress)
-        {
-            try
-            {
-                Outlook.Items items = folder.Items;
-                for (int i = 1; i <= items.Count; i++)
-                {
-                    object item = null;
-                    try
-                    {
-                        item = items[i];
-                        if (item is Outlook.ContactItem contact)
-                        {
-                            try
-                            {
-                                var vcfPath = Path.Combine(outputDir, CleanFileName(contact.FullName) + "_" + count + ".vcf");
-                                contact.SaveAs(vcfPath, Outlook.OlSaveAsType.olVCard);
-                                count++;
-                                progress?.Report(count);
-                            }
-                            catch (Exception ex)
-                            {
-                                Log.Warning(ex, "导出联系人失败: {Name}", contact.FullName);
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Warning(ex, "处理联系人失败");
-                    }
-                    finally { if (item != null) Marshal.ReleaseComObject(item); }
-                }
-                Marshal.ReleaseComObject(items);
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "遍历文件夹失败: {Name}", folder.Name);
-            }
-
-            // 递归处理子文件夹
-            try
-            {
-                foreach (Outlook.Folder subFolder in folder.Folders)
-                {
-                    ExtractContactsRecursive(subFolder, outputDir, ref count, progress);
-                    Marshal.ReleaseComObject(subFolder);
-                }
-            }
-            catch { }
-        }
-
-        /// <summary>
-        /// 从PST文件中提取日历到ICS格式
-        /// </summary>
+        // 日历 facade
         public bool ExtractCalendarToIcs(string pstPath, string outputDir, IProgress<int> progress = null)
         {
-            Log.Information("开始提取 PST 日历: {PstPath}", pstPath);
-
-            if (!File.Exists(pstPath))
-            {
-                Log.Error("PST 文件不存在: {Path}", pstPath);
-                return false;
-            }
-
-            Directory.CreateDirectory(outputDir);
-            Outlook.Application outlookApp = null;
-            Outlook.NameSpace ns = null;
-
-            try
-            {
-                try
-                {
-                    outlookApp = (Outlook.Application)Marshal.GetActiveObject("Outlook.Application");
-                }
-                catch
-                {
-                    outlookApp = new Outlook.Application();
-                    System.Threading.Thread.Sleep(5000);
-                }
-
-                ns = outlookApp.GetNamespace("MAPI");
-
-                // 打开PST文件
-                var pstFolder = ns.Folders.Add(pstPath, Type.Missing) as Outlook.Folder;
-                if (pstFolder == null)
-                {
-                    Log.Error("无法打开 PST 文件: {Path}", pstPath);
-                    return false;
-                }
-
-                // 遍历文件夹查找日历项
-                int calendarCount = 0;
-                ExtractCalendarRecursive(pstFolder, outputDir, ref calendarCount, progress);
-
-                Log.Information("日历提取完成，共 {Count} 个事件", calendarCount);
-                return true;
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "提取 PST 日历失败: {Path}", pstPath);
-                return false;
-            }
-            finally
-            {
-                try { if (ns != null) Marshal.ReleaseComObject(ns); } catch { }
-                try { if (outlookApp != null) Marshal.ReleaseComObject(outlookApp); } catch { }
-            }
-        }
-
-        private void ExtractCalendarRecursive(Outlook.Folder folder, string outputDir, ref int count, IProgress<int> progress)
-        {
-            try
-            {
-                Outlook.Items items = folder.Items;
-                for (int i = 1; i <= items.Count; i++)
-                {
-                    object item = null;
-                    try
-                    {
-                        item = items[i];
-                        if (item is Outlook.AppointmentItem appointment)
-                        {
-                            try
-                            {
-                                var icsPath = Path.Combine(outputDir, CleanFileName(appointment.Subject ?? "日历") + "_" + count + ".ics");
-                                SaveAppointmentAsIcs(appointment, icsPath);
-                                count++;
-                                progress?.Report(count);
-                            }
-                            catch (Exception ex)
-                            {
-                                Log.Warning(ex, "导出日历失败: {Subject}", appointment.Subject);
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Warning(ex, "处理日历项失败");
-                    }
-                    finally { if (item != null) Marshal.ReleaseComObject(item); }
-                }
-                Marshal.ReleaseComObject(items);
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "遍历文件夹失败: {Name}", folder.Name);
-            }
-
-            // 递归处理子文件夹
-            try
-            {
-                foreach (Outlook.Folder subFolder in folder.Folders)
-                {
-                    ExtractCalendarRecursive(subFolder, outputDir, ref count, progress);
-                    Marshal.ReleaseComObject(subFolder);
-                }
-            }
-            catch { }
-        }
-
-        private void SaveAppointmentAsIcs(Outlook.AppointmentItem appointment, string icsPath)
-        {
-            try
-            {
-                StringBuilder sb = new StringBuilder();
-                sb.AppendLine("BEGIN:VCALENDAR");
-                sb.AppendLine("VERSION:2.0");
-                sb.AppendLine("PRODID:-//MailConverter//PST Extract//EN");
-                sb.AppendLine("BEGIN:VEVENT");
-
-                // UID
-                string entryId = "";
-                try { entryId = appointment.EntryID; } catch { }
-                sb.AppendLine($"UID:{entryId ?? Guid.NewGuid().ToString()}@pst-converter.local");
-
-                // Subject
-                string subject = "";
-                try { subject = appointment.Subject ?? ""; } catch { }
-                sb.AppendLine($"SUMMARY:{EncodeIcsText(subject)}");
-
-                // Description
-                string description = "";
-                try { description = appointment.Body ?? ""; } catch { }
-                sb.AppendLine($"DESCRIPTION:{EncodeIcsText(description)}");
-
-                // Start time
-                DateTime start = DateTime.Now;
-                try { start = appointment.Start; } catch { }
-                sb.AppendLine($"DTSTART:{start.ToString("yyyyMMddTHHmmss")}");
-
-                // End time
-                DateTime end = DateTime.Now.AddHours(1);
-                try { end = appointment.End; } catch { }
-                sb.AppendLine($"DTEND:{end.ToString("yyyyMMddTHHmmss")}");
-
-                // Location
-                string location = "";
-                try { location = appointment.Location ?? ""; } catch { }
-                if (!string.IsNullOrEmpty(location))
-                    sb.AppendLine($"LOCATION:{EncodeIcsText(location)}");
-
-                // Organizer
-                string organizer = "";
-                try { organizer = appointment.Organizer ?? ""; } catch { }
-                if (!string.IsNullOrEmpty(organizer))
-                    sb.AppendLine($"ORGANIZER;CN={EncodeIcsText(organizer)}:mailto:{organizer}");
-
-                // Creation time
-                DateTime created = DateTime.Now;
-                try { created = appointment.CreationTime; } catch { }
-                sb.AppendLine($"CREATED:{created.ToString("yyyyMMddTHHmmss")}");
-
-                // Last modified
-                DateTime modified = DateTime.Now;
-                try { modified = appointment.LastModificationTime; } catch { }
-                sb.AppendLine($"LAST-MODIFIED:{modified.ToString("yyyyMMddTHHmmss")}");
-
-                sb.AppendLine("END:VEVENT");
-                sb.AppendLine("END:VCALENDAR");
-
-                File.WriteAllText(icsPath, sb.ToString(), new UTF8Encoding(false));
-                Log.Information("导出日历: {Subject}", subject);
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "生成 ICS 文件失败: {Path}", icsPath);
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// 从PST文件中提取日历到内存 (跳过ICS文件，直接用于Graph同步)
-        /// </summary>
-        public List<PstCalendarData> ExtractCalendarFromPst(string pstPath, IProgress<int> progress = null)
-        {
-            Program.BatchToO365Logger.Information("开始提取 PST 日历(直接模式): {PstPath}", pstPath);
-
-            var calendars = new List<PstCalendarData>();
-
-            if (!File.Exists(pstPath))
-            {
-                Program.BatchToO365Logger.Error("PST 文件不存在: {Path}", pstPath);
-                return calendars;
-            }
-
-            Outlook.Application outlookApp = null;
-            Outlook.NameSpace ns = null;
-
-            try
-            {
-                try
-                {
-                    outlookApp = (Outlook.Application)Marshal.GetActiveObject("Outlook.Application");
-                }
-                catch
-                {
-                    outlookApp = new Outlook.Application();
-                    System.Threading.Thread.Sleep(5000);
-                }
-
-                ns = outlookApp.GetNamespace("MAPI");
-                Outlook.Folder pstFolder = null;
-
-                // 使用 AddStoreEx 挂载 PST 文件
-                try
-                {
-                    ns.AddStoreEx(pstPath, Outlook.OlStoreType.olStoreUnicode);
-                }
-                catch (Exception ex)
-                {
-                    Program.BatchToO365Logger.Warning("添加 Store 失败，可能已挂载: {Msg}", ex.Message);
-                }
-
-                // 寻找对应的 Folder
-                foreach (Outlook.Folder folder in ns.Folders)
-                {
-                    try
-                    {
-                        if (folder.Store != null && !string.IsNullOrEmpty(folder.Store.FilePath))
-                        {
-                            if (Path.GetFullPath(folder.Store.FilePath).Equals(Path.GetFullPath(pstPath), StringComparison.OrdinalIgnoreCase))
-                            {
-                                pstFolder = folder;
-                                break;
-                            }
-                        }
-                    }
-                    catch { }
-                }
-
-                if (pstFolder == null)
-                {
-                    Program.BatchToO365Logger.Error("无法找到 PST 文件对应的 Folder: {Path}", pstPath);
-                    return calendars;
-                }
-
-                // 遍历文件夹提取日历
-                ExtractCalendarRecursiveToMemory(pstFolder, calendars, progress);
-
-                Program.BatchToO365Logger.Information("日历提取完成，共 {Count} 个事件", calendars.Count);
-                return calendars;
-            }
-            catch (Exception ex)
-            {
-                Program.BatchToO365Logger.Error(ex, "提取 PST 日历失败: {Path}", pstPath);
-                return calendars;
-            }
-            finally
-            {
-                try { if (ns != null) Marshal.ReleaseComObject(ns); } catch { }
-                try { if (outlookApp != null) Marshal.ReleaseComObject(outlookApp); } catch { }
-            }
-        }
-
-        private void ExtractCalendarRecursiveToMemory(Outlook.Folder folder, List<PstCalendarData> calendars, IProgress<int> progress)
-        {
-            try
-            {
-                Outlook.Items items = folder.Items;
-                for (int i = 1; i <= items.Count; i++)
-                {
-                    object item = null;
-                    try
-                    {
-                        item = items[i];
-                        if (item is Outlook.AppointmentItem appointment)
-                        {
-                            try
-                            {
-                                var calData = new PstCalendarData
-                                {
-                                    Subject = appointment.Subject ?? "",
-                                    Body = appointment.Body ?? "",
-                                    StartTime = appointment.Start,
-                                    EndTime = appointment.End,
-                                    Location = appointment.Location ?? "",
-                                    IsAllDayEvent = appointment.AllDayEvent,
-                                    ReminderSet = appointment.ReminderSet,
-                                    Categories = appointment.Categories ?? ""
-                                };
-
-                                // 处理与会者信息
-                                try
-                                {
-                                    calData.RequiredAttendees = appointment.RequiredAttendees ?? "";
-                                    calData.OptionalAttendees = appointment.OptionalAttendees ?? "";
-                                    calData.ResourceAttendees = appointment.Resources ?? "";
-                                }
-                                catch { }
-
-                                // 检查是否是重复日程
-                                try
-                                {
-                                    calData.IsRecurring = appointment.IsRecurring;
-                                }
-                                catch { }
-
-                                calendars.Add(calData);
-                                progress?.Report(calendars.Count);
-                            }
-                            catch (Exception ex)
-                            {
-                                Program.BatchToO365Logger.Warning(ex, "提取日历事件失败: {Subject}", appointment.Subject);
-                            }
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        Program.BatchToO365Logger.Warning(ex, "处理日历项失败");
-                    }
-                    finally { if (item != null) Marshal.ReleaseComObject(item); }
-                }
-                Marshal.ReleaseComObject(items);
-            }
-            catch (Exception ex)
-            {
-                Program.BatchToO365Logger.Warning(ex, "遍历文件夹失败: {Name}", folder.Name);
-            }
-
-            // 递归处理子文件夹
-            try
-            {
-                foreach (Outlook.Folder subFolder in folder.Folders)
-                {
-                    ExtractCalendarRecursiveToMemory(subFolder, calendars, progress);
-                    Marshal.ReleaseComObject(subFolder);
-                }
-            }
-            catch { }
-        }
-
-        private string EncodeIcsText(string text)
-        {
-            if (string.IsNullOrEmpty(text)) return "";
-            // Escape special characters for ICS format
-            return text.Replace("\\", "\\\\")
-                       .Replace(",", "\\,")
-                       .Replace(";", "\\;")
-                       .Replace("\n", "\\n")
-                       .Replace("\r", "");
+            return CalendarSyncService.ExtractCalendarToIcs(pstPath, outputDir, progress);
         }
     }
 }
