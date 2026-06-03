@@ -2,8 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Windows.Forms;
+using MailConverter.Services;
 
-namespace MailConverter
+namespace MailConverter.Services.Contacts
 {
     public class ContactSelectionForm : Form
     {
