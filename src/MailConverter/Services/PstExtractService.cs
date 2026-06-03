@@ -419,32 +419,6 @@ namespace MailConverter
         }
 
         /// <summary>
-        /// PST联系人数据类 (用于直接同步到Graph)
-        /// </summary>
-        public class PstContactData
-        {
-            public string DisplayName { get; set; }
-            public string FirstName { get; set; }
-            public string LastName { get; set; }
-            public string MiddleName { get; set; }
-            public string Title { get; set; }
-            public string Suffix { get; set; }
-            public string Email { get; set; }
-            public string Email2 { get; set; }
-            public string Email3 { get; set; }
-            public string Phone { get; set; }
-            public string Phone2 { get; set; }
-            public string MobilePhone { get; set; }
-            public string CompanyName { get; set; }
-            public string Department { get; set; }
-            public string JobTitle { get; set; }
-            public string BusinessAddress { get; set; }
-            public string HomeAddress { get; set; }
-            public string PersonalNotes { get; set; }
-            public DateTime? Birthday { get; set; }
-        }
-
-        /// <summary>
         /// PST日历数据类 (用于直接同步到Graph)
         /// </summary>
         public class PstCalendarData
