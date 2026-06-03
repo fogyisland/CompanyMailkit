@@ -1376,12 +1376,14 @@ namespace MailConverter
             _syncContactsTab = new TabPage("同步联系人");
             var syncContactsControl = new MailConverter.Services.Contacts.SyncContactsControl();
             syncContactsControl.Dock = DockStyle.Fill;
+            syncContactsControl.MainForm = this;
             _syncContactsTab.Controls.Add(syncContactsControl);
 
             // 同步日历子Tab
             _syncCalendarTab = new TabPage("同步日历");
             var syncCalendarControl = new MailConverter.Services.Calendars.SyncCalendarControl();
             syncCalendarControl.Dock = DockStyle.Fill;
+            syncCalendarControl.MainForm = this;
             _syncCalendarTab.Controls.Add(syncCalendarControl);
 
             // 添加子Tab到嵌套TabControl
@@ -4900,7 +4902,31 @@ namespace MailConverter
             }
         }
 
-        private async void BtnO365OAuthLogin_Click(object sender, EventArgs e)
+        // 公开访问器供 SyncContactsControl/SyncCalendarControl 调用
+        public bool IsO365OAuthConnected => _isO365OAuthConnected;
+        public string O365AccessToken => _office365AccessToken;
+        public string O365OAuthEmail => _office365OAuthEmail;
+        public Office365ImportService Office365Service => _office365Service;
+
+        /// <summary>
+        /// 将 UserControl 的输入同步到 MainForm 内部字段,然后才能调用 BtnO365OAuthLogin_Click
+        /// </summary>
+        public void SetO365TextFields(string clientId, string tenantId, string email)
+        {
+            if (txtO365ClientId != null) txtO365ClientId.Text = clientId;
+            if (txtO365TenantId != null) txtO365TenantId.Text = tenantId;
+            if (txtO365Email != null) txtO365Email.Text = email;
+        }
+
+        /// <summary>
+        /// 由 UserControl 在 ConnectWithOAuth 成功后回写,供后续 SyncContacts*/SyncCalendar* 使用
+        /// </summary>
+        public void SetO365Service(Office365ImportService svc)
+        {
+            _office365Service = svc;
+        }
+
+        public async void BtnO365OAuthLogin_Click(object sender, EventArgs e)
         {
             try
             {
@@ -4915,8 +4941,11 @@ namespace MailConverter
                 var txtEmail = panel?.Controls.Find("txtO365AdminAccount", true).FirstOrDefault() as TextBox;
                 var lblStatus = panel?.Controls.Find("lblO365Status", true).FirstOrDefault() as Label;
 
-                lblStatus.Text = "正在打开浏览器进行 OAuth2 登录...";
-                lblStatus.ForeColor = Color.Blue;
+                if (lblStatus != null)
+                {
+                    lblStatus.Text = "正在打开浏览器进行 OAuth2 登录...";
+                    lblStatus.ForeColor = Color.Blue;
+                }
 
                 string clientId = txtClientId?.Text?.Trim() ?? "";
                 string email = txtEmail?.Text?.Trim() ?? "";
