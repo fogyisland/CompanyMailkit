@@ -733,9 +733,9 @@ namespace MailConverter.Services.Contacts
                 }
             }
 
-            // 企业微信 API URL 是固定的 (与邮箱无关), 切到 idx 3/4 时若为空则自动填默认
-            if ((cmbSourceType.SelectedIndex == 3 || cmbSourceType.SelectedIndex == 4)
-                && string.IsNullOrWhiteSpace(txtServerUrl.Text))
+            // 企业微信 API URL 是固定的 (与邮箱无关), 切到 idx 3/4 时无条件刷新为默认
+            // 这样 idx 3 ↔ idx 4 切换时视觉上始终是"自动填充好的"状态
+            if (cmbSourceType.SelectedIndex == 3 || cmbSourceType.SelectedIndex == 4)
             {
                 txtServerUrl.Text = "https://qyapi.weixin.qq.com/cgi-bin/";
             }
