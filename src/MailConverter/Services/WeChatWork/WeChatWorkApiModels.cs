@@ -126,4 +126,83 @@ namespace MailConverter.Services.WeChatWork
         [JsonPropertyName("value")]
         public string Value { get; set; } = "";
     }
+
+    /// <summary>
+    /// GetAllMembers 的返回: 成员列表 + 完整部门树 (id→DepartmentInfo)
+    /// 调用方通过部门树的 parentid 反查可拼出完整路径
+    /// </summary>
+    public class WeChatWorkSyncResult
+    {
+        public List<UserDetailResponse> Members { get; set; } = new List<UserDetailResponse>();
+        public List<DepartmentInfo> Departments { get; set; } = new List<DepartmentInfo>();
+    }
+
+    /// <summary>
+    /// /cgi-bin/externalcontact/list 响应 (某员工名下的所有客户 external_userid)
+    /// </summary>
+    public class ExternalContactListResponse
+    {
+        [JsonPropertyName("errcode")]
+        public int ErrCode { get; set; }
+
+        [JsonPropertyName("errmsg")]
+        public string ErrMsg { get; set; } = "";
+
+        [JsonPropertyName("external_userid")]
+        public List<string> ExternalUserId { get; set; } = new List<string>();
+    }
+
+    /// <summary>
+    /// /cgi-bin/externalcontact/get 响应 (单个客户详情)
+    /// </summary>
+    public class ExternalContactDetailResponse
+    {
+        [JsonPropertyName("errcode")]
+        public int ErrCode { get; set; }
+
+        [JsonPropertyName("errmsg")]
+        public string ErrMsg { get; set; } = "";
+
+        [JsonPropertyName("external_contact")]
+        public ExternalContactInfo ExternalContact { get; set; }
+
+        [JsonPropertyName("follow_user")]
+        public List<FollowUserInfo> FollowUser { get; set; } = new List<FollowUserInfo>();
+    }
+
+    public class ExternalContactInfo
+    {
+        [JsonPropertyName("external_userid")]
+        public string ExternalUserId { get; set; } = "";
+
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = "";
+
+        /// <summary>1=微信用户, 2=企业微信用户</summary>
+        [JsonPropertyName("type")]
+        public int Type { get; set; }
+
+        [JsonPropertyName("avatar")]
+        public string Avatar { get; set; } = "";
+
+        /// <summary>0=未知, 1=男, 2=女</summary>
+        [JsonPropertyName("gender")]
+        public int Gender { get; set; }
+
+        [JsonPropertyName("unionid")]
+        public string UnionId { get; set; } = "";
+
+        /// <summary>客户所属员工的 userid (本字段由服务在调用时附加, 非 API 返回)</summary>
+        [JsonIgnore]
+        public string OwnerUserId { get; set; } = "";
+    }
+
+    public class FollowUserInfo
+    {
+        [JsonPropertyName("userid")]
+        public string UserId { get; set; } = "";
+
+        [JsonPropertyName("remark")]
+        public string Remark { get; set; } = "";
+    }
 }

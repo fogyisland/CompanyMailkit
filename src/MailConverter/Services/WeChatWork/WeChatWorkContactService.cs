@@ -82,8 +82,10 @@ namespace MailConverter.Services.WeChatWork
         ///       每个部门 /user/simplelist 拿 userid 列表 →
         ///       /user/get 拿每个 user 完整信息
         /// progress 回调: 前半为部门扫描, 后半为用户详情拉取
+        /// 返回结果包含完整部门树 (id→DepartmentInfo), 调用方可根据 user.Department[i]
+        /// 反查父级一路拼出完整路径
         /// </summary>
-        public List<UserDetailResponse> GetAllMembers(string accessToken, Action<int, int> progress = null)
+        public WeChatWorkSyncResult GetAllMembers(string accessToken, Action<int, int> progress = null)
         {
             if (string.IsNullOrWhiteSpace(accessToken))
                 throw new ArgumentException("access_token 不能为空", nameof(accessToken));
@@ -93,7 +95,7 @@ namespace MailConverter.Services.WeChatWork
             if (departments.Count == 0)
             {
                 Log.Warning("企业微信未返回任何部门");
-                return new List<UserDetailResponse>();
+                return new WeChatWorkSyncResult();
             }
             Log.Information("企业微信部门总数: {Count}", departments.Count);
 
@@ -110,7 +112,7 @@ namespace MailConverter.Services.WeChatWork
             Log.Information("企业微信去重后用户数: {Count}", userIdSet.Count);
 
             // 3. 逐个 user 拉详情
-            var result = new List<UserDetailResponse>();
+            var members = new List<UserDetailResponse>();
             var allUserIds = userIdSet.ToList();
             var totalUsers = allUserIds.Count;
             for (int i = 0; i < totalUsers; i++)
@@ -121,7 +123,7 @@ namespace MailConverter.Services.WeChatWork
                     var detail = FetchUserDetail(accessToken, uid);
                     if (detail != null && detail.Status == 1)  // 仅激活用户
                     {
-                        result.Add(detail);
+                        members.Add(detail);
                     }
                 }
                 catch (Exception ex)
@@ -135,8 +137,12 @@ namespace MailConverter.Services.WeChatWork
                 }
             }
 
-            Log.Information("企业微信拉取完成: 共 {Total} 个用户 (已激活)", result.Count);
-            return result;
+            Log.Information("企业微信拉取完成: 共 {Total} 个用户 (已激活)", members.Count);
+            return new WeChatWorkSyncResult
+            {
+                Members = members,
+                Departments = departments
+            };
         }
 
         /// <summary>递归拿所有部门 (含子部门), BFS 防止深度递归栈溢出</summary>
@@ -217,6 +223,115 @@ namespace MailConverter.Services.WeChatWork
                 return null;
             }
             return resp;
+        }
+
+        /// <summary>
+        /// 拉取所有员工的客户/外部联系人
+        /// 流程: 复用 GetAllMembers 拿员工列表 → 每个员工 /externalcontact/list →
+        ///       每个 external_userid /externalcontact/get → 去重返回
+        /// 注意: 该 API 需「客户联系 Secret」, access_token 由 gettoken 用该 Secret 换取
+        /// </summary>
+        public List<ExternalContactInfo> GetExternalContacts(string accessToken, Action<int, int> progress = null)
+        {
+            if (string.IsNullOrWhiteSpace(accessToken))
+                throw new ArgumentException("access_token 不能为空", nameof(accessToken));
+
+            // 1. 先拿所有员工 (用同样的 access_token 即可, 自建应用也能读)
+            //    注: 客户联系 Secret 拿到的 access_token 通常也能读通讯录, 但为兼容, 用 GetAllMembers
+            var members = GetAllMembers(accessToken, (cur, total) =>
+            {
+                // 转发到外部 progress, 但只映射到总进度的前 30%
+                progress?.Invoke((int)(cur * 0.3), 100);
+            });
+            var activeMembers = members.Members;
+            Log.Information("企业微信员工数: {Count}, 准备拉取其客户联系人", activeMembers.Count);
+
+            // 2. 收集所有 external_userid (去重, 同时记录属主员工)
+            var extUserMap = new Dictionary<string, string>();  // external_userid → owner_userid
+            var totalMembers = activeMembers.Count;
+            for (int i = 0; i < totalMembers; i++)
+            {
+                var m = activeMembers[i];
+                var extIds = FetchExternalUserIds(accessToken, m.UserId);
+                foreach (var eid in extIds)
+                {
+                    if (!extUserMap.ContainsKey(eid))
+                        extUserMap[eid] = m.UserId;
+                }
+                // 员工阶段占总进度 30% → 70%
+                progress?.Invoke(30 + (int)((i + 1) * 70.0 / totalMembers), 100);
+            }
+
+            Log.Information("企业微信去重后客户数: {Count}", extUserMap.Count);
+
+            // 3. 逐个 external_userid 拉详情
+            var result = new List<ExternalContactInfo>();
+            var allExtIds = extUserMap.Keys.ToList();
+            var totalExt = allExtIds.Count;
+            for (int i = 0; i < totalExt; i++)
+            {
+                var eid = allExtIds[i];
+                try
+                {
+                    var detail = FetchExternalContactDetail(accessToken, eid);
+                    if (detail != null && !string.IsNullOrEmpty(detail.ExternalUserId))
+                    {
+                        detail.OwnerUserId = extUserMap[eid];
+                        result.Add(detail);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "拉取客户详情失败: external_userid={Eid}", eid);
+                }
+                // 详情阶段占总进度 70% → 100%
+                progress?.Invoke(70 + (int)((i + 1) * 30.0 / Math.Max(1, totalExt)), 100);
+            }
+
+            Log.Information("企业微信客户联系人拉取完成: 共 {Total} 个", result.Count);
+            return result;
+        }
+
+        /// <summary>拉取某员工名下的所有客户 external_userid</summary>
+        private List<string> FetchExternalUserIds(string accessToken, string userId)
+        {
+            var url = $"{_apiBase}/externalcontact/list?access_token={accessToken}&userid={Uri.EscapeDataString(userId)}";
+            try
+            {
+                var json = _http.GetStringAsync(url).GetAwaiter().GetResult();
+                var resp = JsonSerializer.Deserialize<ExternalContactListResponse>(json);
+                if (resp == null || resp.ErrCode != 0)
+                {
+                    // 60020/60011 等鉴权问题: 不抛, 记日志返回空 (避免阻断其他员工)
+                    if (resp != null && resp.ErrCode != 0)
+                    {
+                        Log.Warning("拉取员工客户列表失败: userid={Uid}, errcode={Errcode}, errmsg={Errmsg}",
+                            userId, resp.ErrCode, resp.ErrMsg);
+                    }
+                    return new List<string>();
+                }
+                return resp.ExternalUserId ?? new List<string>();
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "拉取员工客户列表网络异常: userid={Uid}", userId);
+                return new List<string>();
+            }
+        }
+
+        /// <summary>拉取单个客户的详情</summary>
+        private ExternalContactInfo FetchExternalContactDetail(string accessToken, string externalUserId)
+        {
+            var url = $"{_apiBase}/externalcontact/get?access_token={accessToken}&external_userid={Uri.EscapeDataString(externalUserId)}";
+            var json = _http.GetStringAsync(url).GetAwaiter().GetResult();
+            var resp = JsonSerializer.Deserialize<ExternalContactDetailResponse>(json);
+            if (resp == null || resp.ErrCode != 0)
+            {
+                Log.Warning("拉取客户详情失败: external_userid={Eid}, errcode={Errcode}, errmsg={Errmsg}",
+                    externalUserId, resp?.ErrCode, resp?.ErrMsg);
+                return null;
+            }
+            return resp.ExternalContact;
         }
     }
 

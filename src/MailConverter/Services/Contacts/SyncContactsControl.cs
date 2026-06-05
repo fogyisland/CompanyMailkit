@@ -39,6 +39,7 @@ namespace MailConverter.Services.Contacts
         private Label lblCardDavProviderList;
         private ComboBox cmbSyncAccounts;
         private TableLayoutPanel tblSource;
+        private ToolTip _wechatWorkTip;
 
         private List<string> _selectedContactUrls = new List<string>();
 
@@ -51,6 +52,13 @@ namespace MailConverter.Services.Contacts
         public SyncContactsControl()
         {
             Dock = DockStyle.Fill;
+            _wechatWorkTip = new ToolTip
+            {
+                AutoPopDelay = 10000,
+                InitialDelay = 300,
+                ReshowDelay = 200,
+                IsBalloon = false
+            };
             BuildUI();
         }
 
@@ -195,7 +203,7 @@ namespace MailConverter.Services.Contacts
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Dock = DockStyle.Fill
             };
-            cmbSourceType.Items.AddRange(new object[] { "本地文件(CSV)", "本地文件(VCF)", "CardDAV", "企业微信API", "Exchange", "Office 365 额外租户" });
+            cmbSourceType.Items.AddRange(new object[] { "本地文件(CSV)", "本地文件(VCF)", "CardDAV", "企业微信API(内部)", "企业微信(客户联系)", "Exchange", "Office 365 额外租户" });
             cmbSourceType.SelectedIndex = 0;
             cmbSourceType.SelectedIndexChanged += CmbSourceType_SelectedIndexChanged;
 
@@ -557,7 +565,7 @@ namespace MailConverter.Services.Contacts
 
             if (sourceType == 4)
             {
-                // Exchange - 复用 txtServerUrl/Username/Password, 标签由 SetSourceFieldLabels 切到 EWS URL/用户名/密码
+                // 企业微信 (客户联系 / 外部联系人) - 复用三输入框, 标签由 SetSourceFieldLabels 切到 API/CorpID/客户联系 Secret
                 lblCardDavAccount.Visible = false;
                 cmbCardDavAccounts.Visible = false;
                 lblCardDavTip.Visible = false;
@@ -579,7 +587,7 @@ namespace MailConverter.Services.Contacts
             }
             else if (sourceType == 5)
             {
-                // Office 365 额外租户 - 复用三输入框, 标签由 SetSourceFieldLabels 切到源 Client ID/Tenant ID/Email
+                // Exchange - 复用 txtServerUrl/Username/Password, 标签由 SetSourceFieldLabels 切到 EWS URL/用户名/密码
                 lblCardDavAccount.Visible = false;
                 cmbCardDavAccounts.Visible = false;
                 lblCardDavTip.Visible = false;
@@ -599,9 +607,31 @@ namespace MailConverter.Services.Contacts
                 SetSourceFieldLabels(5);
                 CollapseRows(localFileMode: false, showCardDavButtons: false);
             }
+            else if (sourceType == 6)
+            {
+                // Office 365 额外租户 - 复用三输入框, 标签由 SetSourceFieldLabels 切到源 Client ID/Tenant ID/Email
+                lblCardDavAccount.Visible = false;
+                cmbCardDavAccounts.Visible = false;
+                lblCardDavTip.Visible = false;
+                lblCardDavProviderList.Visible = false;
+                lblServerUrl.Visible = true;
+                txtServerUrl.Visible = true;
+                lblUsername.Visible = true;
+                txtUsername.Visible = true;
+                lblPassword.Visible = true;
+                txtPassword.Visible = true;
+                lblSourceFile.Visible = false;
+                txtSourceFile.Visible = false;
+                btnBrowse.Visible = false;
+                btnDownloadTemplate.Visible = false;
+                btnSelectContacts.Visible = false;
+                btnIncrementalSync.Visible = false;
+                SetSourceFieldLabels(6);
+                CollapseRows(localFileMode: false, showCardDavButtons: false);
+            }
             else
             {
-                // 其他本地文件 / CardDAV / 企业微信API 模式恢复默认标签 (以防从 idx 4/5 切回)
+                // 其他本地文件 / CardDAV / 企业微信API 模式恢复默认标签 (以防从 idx 4/5/6 切回)
                 SetSourceFieldLabels(sourceType);
             }
         }
@@ -630,21 +660,38 @@ namespace MailConverter.Services.Contacts
         {
             if (sourceType == 3)
             {
-                // 企业微信 API
+                // 企业微信 API (内部通讯录)
                 lblServerUrl.Text = "API 地址:";
                 lblUsername.Text = "CorpID:";
-                lblPassword.Text = "CorpSecret:";
+                lblPassword.Text = "CorpSecret (自建应用):";
                 txtPassword.UseSystemPasswordChar = true;
+                _wechatWorkTip.SetToolTip(txtPassword,
+                    "必须使用「自建应用」的 Secret, 不是「通讯录同步 Secret」。\n" +
+                    "在企业微信管理后台 → 应用管理 → 自建应用 → Secret 栏获取。\n" +
+                    "通讯录同步 Secret 只能写入或读 userid 列表, 读不到姓名/手机/邮箱等详情。");
             }
             else if (sourceType == 4)
             {
+                // 企业微信 API (客户联系 / 外部联系人) - 待 Task C 实现
+                lblServerUrl.Text = "API 地址:";
+                lblUsername.Text = "CorpID:";
+                lblPassword.Text = "CorpSecret (客户联系):";
+                txtPassword.UseSystemPasswordChar = true;
+                _wechatWorkTip.SetToolTip(txtPassword,
+                    "必须使用「客户联系」应用的 Secret, 不是「通讯录同步 Secret」也不是「自建应用 Secret」。\n" +
+                    "在企业微信管理后台 → 客户联系 → API → 客户联系 Secret 栏获取。");
+            }
+            else if (sourceType == 5)
+            {
+                // Exchange - 复用 txtServerUrl/Username/Password
                 lblServerUrl.Text = "EWS URL:";
                 lblUsername.Text = "用户名:";
                 lblPassword.Text = "密码:";
                 txtPassword.UseSystemPasswordChar = true;
             }
-            else if (sourceType == 5)
+            else if (sourceType == 6)
             {
+                // Office 365 额外租户
                 lblServerUrl.Text = "源 Client ID:";
                 lblUsername.Text = "源 Tenant ID:";
                 lblPassword.Text = "源 Email:";
@@ -686,8 +733,9 @@ namespace MailConverter.Services.Contacts
                 }
             }
 
-            // 企业微信 API URL 是固定的 (与邮箱无关), 切到 idx 3 时若为空则自动填默认
-            if (cmbSourceType.SelectedIndex == 3 && string.IsNullOrWhiteSpace(txtServerUrl.Text))
+            // 企业微信 API URL 是固定的 (与邮箱无关), 切到 idx 3/4 时若为空则自动填默认
+            if ((cmbSourceType.SelectedIndex == 3 || cmbSourceType.SelectedIndex == 4)
+                && string.IsNullOrWhiteSpace(txtServerUrl.Text))
             {
                 txtServerUrl.Text = "https://qyapi.weixin.qq.com/cgi-bin/";
             }
@@ -886,16 +934,16 @@ namespace MailConverter.Services.Contacts
 
             var sourceType = cmbSourceType.SelectedIndex;
 
-            // Exchange (4) / Office 365 额外租户 (5) 同步功能开发中, 先拦截
-            if (sourceType == 4 || sourceType == 5)
+            // Exchange (5) / Office 365 额外租户 (6) 同步功能开发中, 先拦截
+            if (sourceType == 5 || sourceType == 6)
             {
                 lblSyncStatus.Text = (cmbSourceType.SelectedItem?.ToString() ?? "新源") + " 源同步功能开发中, 敬请期待";
                 lblSyncStatus.ForeColor = Color.Orange;
                 return;
             }
 
-            // CardDAV/企业微信API 不需要选择源文件
-            if (sourceType != 2 && sourceType != 3)
+            // CardDAV/企业微信API(内部)/企业微信(客户联系) 不需要选择源文件
+            if (sourceType != 2 && sourceType != 3 && sourceType != 4)
             {
                 if (string.IsNullOrWhiteSpace(txtSourceFile.Text))
                 {
@@ -1158,7 +1206,7 @@ namespace MailConverter.Services.Contacts
                             }
                         }
                     }
-                    else if (sourceType == 3) // 企业微信API
+                    else if (sourceType == 3) // 企业微信API (内部)
                     {
                         var corpId = txtUsername.Text.Trim();
                         var corpSecret = txtPassword.Text; // 不 Trim, secret 可能含特殊字符
@@ -1166,7 +1214,7 @@ namespace MailConverter.Services.Contacts
 
                         if (string.IsNullOrWhiteSpace(corpId) || string.IsNullOrWhiteSpace(corpSecret))
                         {
-                            resultMessage = "请输入 CorpID 和 CorpSecret";
+                            resultMessage = "请输入 CorpID 和 CorpSecret (自建应用)";
                         }
                         else
                         {
@@ -1176,6 +1224,27 @@ namespace MailConverter.Services.Contacts
                                 lblSyncStatus.ForeColor = Color.Blue;
                             }));
                             resultMessage = MainForm.SyncContactsFromWeChatWork(
+                                corpId, corpSecret, apiBase, progressCallback, logCallback);
+                        }
+                    }
+                    else if (sourceType == 4) // 企业微信 (客户联系 / 外部联系人)
+                    {
+                        var corpId = txtUsername.Text.Trim();
+                        var corpSecret = txtPassword.Text;
+                        var apiBase = string.IsNullOrWhiteSpace(txtServerUrl.Text) ? null : txtServerUrl.Text.Trim();
+
+                        if (string.IsNullOrWhiteSpace(corpId) || string.IsNullOrWhiteSpace(corpSecret))
+                        {
+                            resultMessage = "请输入 CorpID 和 CorpSecret (客户联系)";
+                        }
+                        else
+                        {
+                            this.Invoke(new Action(() =>
+                            {
+                                lblSyncStatus.Text = "正在调用企业微信客户联系 API...";
+                                lblSyncStatus.ForeColor = Color.Blue;
+                            }));
+                            resultMessage = MainForm.SyncContactsFromWeChatWorkExternal(
                                 corpId, corpSecret, apiBase, progressCallback, logCallback);
                         }
                     }

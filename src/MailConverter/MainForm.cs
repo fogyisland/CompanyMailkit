@@ -18776,7 +18776,7 @@ namespace MailConverter
             catch (WeChatWorkApiException ex)
             {
                 log?.Invoke($"gettoken 失败: {ex.Message}");
-                return $"企业微信鉴权失败: {ex.Message}";
+                return TranslateWeChatWorkError(ex);
             }
             catch (Exception ex)
             {
@@ -18784,19 +18784,28 @@ namespace MailConverter
                 return $"企业微信鉴权异常: {ex.Message}";
             }
 
-            List<UserDetailResponse> members;
+            WeChatWorkSyncResult syncResult;
             try
             {
-                members = svc.GetAllMembers(accessToken, (cur, total) =>
+                syncResult = svc.GetAllMembers(accessToken, (cur, total) =>
                 {
                     progress?.Invoke(cur, total);
                 });
+            }
+            catch (WeChatWorkApiException ex)
+            {
+                log?.Invoke($"拉取成员失败: {ex.Message}");
+                return TranslateWeChatWorkError(ex);
             }
             catch (Exception ex)
             {
                 log?.Invoke($"拉取成员异常: {ex.Message}");
                 return $"拉取企业微信成员失败: {ex.Message}";
             }
+
+            var members = syncResult.Members;
+            // 部门 id → DepartmentInfo, 用于反查父级拼完整路径
+            var deptMap = syncResult.Departments.ToDictionary(d => d.Id, d => d);
 
             int created = 0, updated = 0, skipped = 0, failed = 0;
             for (int i = 0; i < members.Count; i++)
@@ -18820,7 +18829,7 @@ namespace MailConverter
                 var displayName = u.Name;
                 var email = u.Email ?? "";
                 var phone = u.Mobile ?? "";
-                var company = $"企业微信 ID: {u.UserId}";
+                var company = BuildFullDepartmentPath(u.Department, deptMap);
                 var title = u.Position ?? "";
 
                 try
@@ -18833,7 +18842,7 @@ namespace MailConverter
                     {
                         if (existing != null) updated++;
                         else created++;
-                        log?.Invoke($"[{i + 1}/{members.Count}] {(existing != null ? "更新" : "新建")}: {displayName} <{email}>");
+                        log?.Invoke($"[{i + 1}/{members.Count}] {(existing != null ? "更新" : "新建")}: {displayName} <{email}> [{company}]");
                     }
                     else
                     {
@@ -18853,6 +18862,164 @@ namespace MailConverter
             log?.Invoke($"=== {msg} ===");
             logger?.Information("企业微信→O365: {Msg}", msg);
             return msg;
+        }
+
+        /// <summary>
+        /// 从企业微信「客户联系」API 同步外部联系人 (微信客户/企微客户) 到 O365
+        /// 流程: gettoken (用「客户联系 Secret」) → GetExternalContacts →
+        ///       字段映射 → Office365ImportService.UpsertContact
+        /// 注: 客户联系无 email/手机, 跳过 email 必填检查; 用 external_userid 做幂等去重
+        /// </summary>
+        public string SyncContactsFromWeChatWorkExternal(string corpId, string corpSecret, string apiBase = null,
+            Action<int, int> progress = null, Action<string> log = null)
+        {
+            var logger = Program.BatchToO365Logger;
+            log?.Invoke("=== 企业微信 (客户联系) → O365 联系人同步开始 ===");
+            log?.Invoke($"CorpID: {corpId}");
+
+            if (_office365Service == null || !_office365Service.IsOAuthConnected)
+            {
+                log?.Invoke("未登录 Office 365, 中止同步");
+                return "请先登录 Office 365";
+            }
+
+            var svc = new WeChatWorkContactService(apiBase);
+            string accessToken;
+            try
+            {
+                accessToken = svc.GetAccessToken(corpId, corpSecret);
+            }
+            catch (WeChatWorkApiException ex)
+            {
+                log?.Invoke($"gettoken 失败: {ex.Message}");
+                return TranslateWeChatWorkError(ex);
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"gettoken 异常: {ex.Message}");
+                return $"企业微信鉴权异常: {ex.Message}";
+            }
+
+            List<ExternalContactInfo> customers;
+            try
+            {
+                customers = svc.GetExternalContacts(accessToken, (cur, total) =>
+                {
+                    progress?.Invoke(cur, total);
+                });
+            }
+            catch (WeChatWorkApiException ex)
+            {
+                log?.Invoke($"拉取客户失败: {ex.Message}");
+                return TranslateWeChatWorkError(ex);
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"拉取客户异常: {ex.Message}");
+                return $"拉取企业微信客户失败: {ex.Message}";
+            }
+
+            int created = 0, skipped = 0, failed = 0;
+            for (int i = 0; i < customers.Count; i++)
+            {
+                var c = customers[i];
+                if (string.IsNullOrWhiteSpace(c.Name))
+                {
+                    skipped++;
+                    log?.Invoke($"[{i + 1}/{customers.Count}] 跳过 (无姓名): external_userid={c.ExternalUserId}");
+                    progress?.Invoke(i + 1, customers.Count);
+                    continue;
+                }
+                if (string.IsNullOrWhiteSpace(c.ExternalUserId))
+                {
+                    skipped++;
+                    log?.Invoke($"[{i + 1}/{customers.Count}] 跳过 (无 external_userid): {c.Name}");
+                    progress?.Invoke(i + 1, customers.Count);
+                    continue;
+                }
+
+                // 字段映射: 客户联系字段很少, 没有 email/手机
+                // name → displayName, type(1微信/2企微) → company, external_userid → title
+                var displayName = c.Name;
+                var email = "";       // 客户联系 API 不返回 email
+                var phone = "";       // 客户联系 API 不返回 phone
+                var company = c.Type == 2 ? "企业微信客户" : "微信客户";
+                var title = $"WeChat ID: {c.ExternalUserId}";
+
+                try
+                {
+                    // 注: 客户联系没有 email, 无法用 FindContactByEmail 判 created vs updated
+                    // 总是调用 UpsertContact, 它会按 internal 逻辑去重 (按 email 字段)
+                    // 重复运行会在 O365 创建多条同名联系人, 后续如需去重可改用 external_userid 查询
+                    if (_office365Service.UpsertContact(displayName, email, phone, company, title))
+                    {
+                        created++;
+                        log?.Invoke($"[{i + 1}/{customers.Count}] 创建: {displayName} [{company}] (Owner: {c.OwnerUserId})");
+                    }
+                    else
+                    {
+                        failed++;
+                        log?.Invoke($"[{i + 1}/{customers.Count}] 失败: {displayName}");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    log?.Invoke($"[{i + 1}/{customers.Count}] 异常: {displayName} - {ex.Message}");
+                }
+                progress?.Invoke(i + 1, customers.Count);
+            }
+
+            var msg = $"客户同步完成, 共 {customers.Count} 个客户 (创建 {created}, 跳过 {skipped}, 失败 {failed})";
+            log?.Invoke($"=== {msg} ===");
+            logger?.Information("企业微信(客户)→O365: {Msg}", msg);
+            return msg;
+        }
+
+        /// <summary>
+        /// 把企业微信 API 错误码翻译成用户可读的中文提示
+        /// 重点处理 Secret 类型错选的情况 (60011/60020)
+        /// </summary>
+        private string TranslateWeChatWorkError(WeChatWorkApiException ex)
+        {
+            switch (ex.ErrCode)
+            {
+                case 40001:
+                case 42001:
+                case 40014:
+                    return $"企业微信 access_token 无效或已过期 ({ex.ErrCode}): {ex.Message}";
+                case 60011:
+                case 60020:
+                    return $"当前 Secret 无权访问该接口 (errcode={ex.ErrCode})。" +
+                           $"请使用「自建应用」的 Secret, 不是「通讯录同步 Secret」, " +
+                           $"并在管理后台「应用管理 → 自建应用」中配置成员可见范围。" +
+                           $"原始错误: {ex.Message}";
+                default:
+                    return $"企业微信 API 错误 (errcode={ex.ErrCode}): {ex.Message}";
+            }
+        }
+
+        /// <summary>
+        /// 从企业微信部门树构建成员的完整部门路径
+        /// 例如: 用户的 department=[5], 5→4→1, 对应 "总公司/技术部/后端组"
+        /// 多部门时取第一个, 走 leaf→root 反向拼接
+        /// </summary>
+        private string BuildFullDepartmentPath(List<int> deptIds, Dictionary<int, DepartmentInfo> deptMap)
+        {
+            if (deptIds == null || deptIds.Count == 0 || deptMap == null) return "";
+            var startId = deptIds[0];
+            if (!deptMap.ContainsKey(startId)) return "";
+
+            var parts = new List<string>();
+            int current = startId;
+            int safety = 0;  // 防环
+            while (current > 0 && deptMap.TryGetValue(current, out var dept) && safety++ < 20)
+            {
+                parts.Insert(0, dept.Name);
+                if (dept.ParentId == 0 || dept.ParentId == current) break;  // 到达根
+                current = dept.ParentId;
+            }
+            return string.Join("/", parts);
         }
 
         private void BtnSyncCalendar_Click(object sender, EventArgs e)
