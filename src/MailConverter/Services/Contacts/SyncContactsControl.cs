@@ -195,7 +195,7 @@ namespace MailConverter.Services.Contacts
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Dock = DockStyle.Fill
             };
-            cmbSourceType.Items.AddRange(new object[] { "本地文件(CSV)", "本地文件(VCF)", "CardDAV", "企业微信API" });
+            cmbSourceType.Items.AddRange(new object[] { "本地文件(CSV)", "本地文件(VCF)", "CardDAV", "企业微信API", "Exchange", "Office 365 额外租户" });
             cmbSourceType.SelectedIndex = 0;
             cmbSourceType.SelectedIndexChanged += CmbSourceType_SelectedIndexChanged;
 
@@ -554,6 +554,56 @@ namespace MailConverter.Services.Contacts
                 btnDownloadTemplate.Visible = false;
                 CollapseRows(localFileMode: false, showCardDavButtons: false);
             }
+
+            if (sourceType == 4)
+            {
+                // Exchange - 复用 txtServerUrl/Username/Password, 标签由 SetSourceFieldLabels 切到 EWS URL/用户名/密码
+                lblCardDavAccount.Visible = false;
+                cmbCardDavAccounts.Visible = false;
+                lblCardDavTip.Visible = false;
+                lblCardDavProviderList.Visible = false;
+                lblServerUrl.Visible = true;
+                txtServerUrl.Visible = true;
+                lblUsername.Visible = true;
+                txtUsername.Visible = true;
+                lblPassword.Visible = true;
+                txtPassword.Visible = true;
+                lblSourceFile.Visible = false;
+                txtSourceFile.Visible = false;
+                btnBrowse.Visible = false;
+                btnDownloadTemplate.Visible = false;
+                btnSelectContacts.Visible = false;
+                btnIncrementalSync.Visible = false;
+                SetSourceFieldLabels(4);
+                CollapseRows(localFileMode: false, showCardDavButtons: false);
+            }
+            else if (sourceType == 5)
+            {
+                // Office 365 额外租户 - 复用三输入框, 标签由 SetSourceFieldLabels 切到源 Client ID/Tenant ID/Email
+                lblCardDavAccount.Visible = false;
+                cmbCardDavAccounts.Visible = false;
+                lblCardDavTip.Visible = false;
+                lblCardDavProviderList.Visible = false;
+                lblServerUrl.Visible = true;
+                txtServerUrl.Visible = true;
+                lblUsername.Visible = true;
+                txtUsername.Visible = true;
+                lblPassword.Visible = true;
+                txtPassword.Visible = true;
+                lblSourceFile.Visible = false;
+                txtSourceFile.Visible = false;
+                btnBrowse.Visible = false;
+                btnDownloadTemplate.Visible = false;
+                btnSelectContacts.Visible = false;
+                btnIncrementalSync.Visible = false;
+                SetSourceFieldLabels(5);
+                CollapseRows(localFileMode: false, showCardDavButtons: false);
+            }
+            else
+            {
+                // 其他本地文件 / CardDAV / 企业微信API 模式恢复默认标签 (以防从 idx 4/5 切回)
+                SetSourceFieldLabels(sourceType);
+            }
         }
 
         /// <summary>
@@ -568,6 +618,38 @@ namespace MailConverter.Services.Contacts
             tblSource.RowStyles[3].Height = localFileMode ? 0 : 36;
             // Row 4: CardDAV 按钮 (40px) - 仅 CardDAV 模式显示
             tblSource.RowStyles[4].Height = (!localFileMode && showCardDavButtons) ? 40 : 0;
+        }
+
+        /// <summary>
+        /// 按数据来源切换 txtServerUrl/Username/Password 的标签和密码掩码
+        /// 索引 4 = Exchange: EWS URL / 用户名 / 密码
+        /// 索引 5 = Office 365 额外租户: 源 Client ID / 源 Tenant ID / 源 Email (Email 不掩码)
+        /// 其他 = 恢复默认: 服务器 / 用户名 / 密码
+        /// </summary>
+        private void SetSourceFieldLabels(int sourceType)
+        {
+            if (sourceType == 4)
+            {
+                lblServerUrl.Text = "EWS URL:";
+                lblUsername.Text = "用户名:";
+                lblPassword.Text = "密码:";
+                txtPassword.UseSystemPasswordChar = true;
+            }
+            else if (sourceType == 5)
+            {
+                lblServerUrl.Text = "源 Client ID:";
+                lblUsername.Text = "源 Tenant ID:";
+                lblPassword.Text = "源 Email:";
+                // Email 不是密码, 关掉掩码以便用户能看清
+                txtPassword.UseSystemPasswordChar = false;
+            }
+            else
+            {
+                lblServerUrl.Text = "服务器:";
+                lblUsername.Text = "用户名:";
+                lblPassword.Text = "密码:";
+                txtPassword.UseSystemPasswordChar = true;
+            }
         }
 
         // === 事件处理 ===
@@ -792,6 +874,14 @@ namespace MailConverter.Services.Contacts
             }
 
             var sourceType = cmbSourceType.SelectedIndex;
+
+            // Exchange (4) / Office 365 额外租户 (5) 同步功能开发中, 先拦截
+            if (sourceType == 4 || sourceType == 5)
+            {
+                lblSyncStatus.Text = (cmbSourceType.SelectedItem?.ToString() ?? "新源") + " 源同步功能开发中, 敬请期待";
+                lblSyncStatus.ForeColor = Color.Orange;
+                return;
+            }
 
             // CardDAV/企业微信API 不需要选择源文件
             if (sourceType != 2 && sourceType != 3)

@@ -195,7 +195,7 @@ namespace MailConverter.Services.Calendars
                 DropDownStyle = ComboBoxStyle.DropDownList,
                 Dock = DockStyle.Fill
             };
-            cmbSourceType.Items.AddRange(new object[] { "CSV", "ICS", "CalDAV" });
+            cmbSourceType.Items.AddRange(new object[] { "CSV", "ICS", "CalDAV", "Exchange", "Office 365 额外租户" });
             cmbSourceType.SelectedIndex = 0;
             cmbSourceType.SelectedIndexChanged += CmbSourceType_SelectedIndexChanged;
 
@@ -551,9 +551,13 @@ namespace MailConverter.Services.Calendars
                 // 导入时区 (本地文件行)
                 lblImportTimeZone.Visible = true;
                 cmbImportTimeZone.Visible = true;
+                // 本地文件模式显示文件源时区 + 导入时区
+                lblSourceTimeZone.Visible = true;
+                cmbSourceTimeZone.Visible = true;
+                SetSourceFieldLabels(sourceType);
                 CollapseRows(localFileMode: true);
             }
-            else
+            else if (sourceType == 2)
             {
                 // CalDAV
                 lblCalDavAccount.Visible = true;
@@ -570,9 +574,77 @@ namespace MailConverter.Services.Calendars
                 // CalDAV 模式隐藏本地文件行内的导入时区(改由"文件源时区"承担)
                 lblImportTimeZone.Visible = false;
                 cmbImportTimeZone.Visible = false;
+                // CalDAV 模式仍显示文件源时区(由源服务器返回的时间解释)
+                lblSourceTimeZone.Visible = true;
+                cmbSourceTimeZone.Visible = true;
                 // 切换到 CalDAV 模式时刷新账户下拉框
                 ReloadCalDavAccounts();
+                SetSourceFieldLabels(sourceType);
                 CollapseRows(localFileMode: false);
+            }
+            else if (sourceType == 3)
+            {
+                // Exchange - 复用 txtServerUrl/Username/Password, 标签由 SetSourceFieldLabels 切到 EWS URL/用户名/密码
+                lblCalDavAccount.Visible = false;
+                cmbCalDavAccounts.Visible = false;
+                lblServerUrl.Visible = true;
+                txtServerUrl.Visible = true;
+                lblUsername.Visible = true;
+                txtUsername.Visible = true;
+                lblPassword.Visible = true;
+                txtPassword.Visible = true;
+                lblSourceFile.Visible = false;
+                txtSourceFile.Visible = false;
+                btnBrowse.Visible = false;
+                // Exchange 模式: 不需要本地文件相关的时区 (Row 0 的 col 2-3 文件源时区仍可见但由用户自由选择)
+                lblImportTimeZone.Visible = false;
+                cmbImportTimeZone.Visible = false;
+                lblSourceTimeZone.Visible = true;
+                cmbSourceTimeZone.Visible = true;
+                SetSourceFieldLabels(3);
+                CollapseRows(localFileMode: false);
+            }
+            else if (sourceType == 4)
+            {
+                // Office 365 额外租户 - 复用三输入框, 标签由 SetSourceFieldLabels 切到源 Client ID/Tenant ID/Email
+                lblCalDavAccount.Visible = false;
+                cmbCalDavAccounts.Visible = false;
+                lblServerUrl.Visible = true;
+                txtServerUrl.Visible = true;
+                lblUsername.Visible = true;
+                txtUsername.Visible = true;
+                lblPassword.Visible = true;
+                txtPassword.Visible = true;
+                lblSourceFile.Visible = false;
+                txtSourceFile.Visible = false;
+                btnBrowse.Visible = false;
+                lblImportTimeZone.Visible = false;
+                cmbImportTimeZone.Visible = false;
+                lblSourceTimeZone.Visible = true;
+                cmbSourceTimeZone.Visible = true;
+                SetSourceFieldLabels(4);
+                CollapseRows(localFileMode: false);
+            }
+            else
+            {
+                // 未知源类型 - 恢复默认可见性
+                lblSourceFile.Visible = true;
+                txtSourceFile.Visible = true;
+                btnBrowse.Visible = true;
+                lblServerUrl.Visible = false;
+                txtServerUrl.Visible = false;
+                lblUsername.Visible = false;
+                txtUsername.Visible = false;
+                lblPassword.Visible = false;
+                txtPassword.Visible = false;
+                lblCalDavAccount.Visible = false;
+                cmbCalDavAccounts.Visible = false;
+                lblImportTimeZone.Visible = true;
+                cmbImportTimeZone.Visible = true;
+                lblSourceTimeZone.Visible = true;
+                cmbSourceTimeZone.Visible = true;
+                SetSourceFieldLabels(sourceType);
+                CollapseRows(localFileMode: true);
             }
         }
 
@@ -594,6 +666,38 @@ namespace MailConverter.Services.Calendars
             tblSource.RowStyles[4].Height = localFileMode ? 0 : 30;
             // Row 5: 用户名 + 密码 (36px) - 仅 CalDAV 模式显示
             tblSource.RowStyles[5].Height = localFileMode ? 0 : 36;
+        }
+
+        /// <summary>
+        /// 按数据来源切换 txtServerUrl/Username/Password 的标签和密码掩码
+        /// 索引 3 = Exchange: EWS URL / 用户名 / 密码
+        /// 索引 4 = Office 365 额外租户: 源 Client ID / 源 Tenant ID / 源 Email (Email 不掩码)
+        /// 其他 = 恢复默认: 服务器 / 用户名 / 密码
+        /// </summary>
+        private void SetSourceFieldLabels(int sourceType)
+        {
+            if (sourceType == 3)
+            {
+                lblServerUrl.Text = "EWS URL:";
+                lblUsername.Text = "用户名:";
+                lblPassword.Text = "密码:";
+                txtPassword.UseSystemPasswordChar = true;
+            }
+            else if (sourceType == 4)
+            {
+                lblServerUrl.Text = "源 Client ID:";
+                lblUsername.Text = "源 Tenant ID:";
+                lblPassword.Text = "源 Email:";
+                // Email 不是密码, 关掉掩码
+                txtPassword.UseSystemPasswordChar = false;
+            }
+            else
+            {
+                lblServerUrl.Text = "服务器:";
+                lblUsername.Text = "用户名:";
+                lblPassword.Text = "密码:";
+                txtPassword.UseSystemPasswordChar = true;
+            }
         }
 
         // === 事件处理 ===
@@ -664,6 +768,14 @@ namespace MailConverter.Services.Calendars
             }
 
             var sourceType = cmbSourceType.SelectedIndex;
+
+            // Exchange (3) / Office 365 额外租户 (4) 同步功能开发中, 先拦截
+            if (sourceType == 3 || sourceType == 4)
+            {
+                lblSyncStatus.Text = (cmbSourceType.SelectedItem?.ToString() ?? "新源") + " 源同步功能开发中, 敬请期待";
+                lblSyncStatus.ForeColor = Color.Orange;
+                return;
+            }
 
             // CalDAV 不需要选择源文件
             if (sourceType != 2)
