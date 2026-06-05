@@ -15,6 +15,7 @@ using MimeKit;
 using Microsoft.WindowsAPICodePack.Dialogs;
 using MailConverter.Services.Contacts;
 using MailConverter.Services.Calendars;
+using MailConverter.Services.WeChatWork;
 
 namespace MailConverter
 {
@@ -18746,6 +18747,112 @@ namespace MailConverter
         {
             // MSG 文件需要 Redemption 库，这里暂时显示提示
             return "MSG 格式联系人同步需要 Outlook 支持";
+        }
+
+        /// <summary>
+        /// 从企业微信通讯录同步联系人到 O365
+        /// 流程: gettoken → /department/list 递归 → /user/simplelist → /user/get →
+        ///       字段映射 → Office365ImportService.UpsertContact
+        /// </summary>
+        public string SyncContactsFromWeChatWork(string corpId, string corpSecret, string apiBase = null,
+            Action<int, int> progress = null, Action<string> log = null)
+        {
+            var logger = Program.BatchToO365Logger; // 复用现有 logger (写到 Logs/batchToO365/)
+            log?.Invoke("=== 企业微信 → O365 联系人同步开始 ===");
+            log?.Invoke($"CorpID: {corpId}");
+
+            if (_office365Service == null || !_office365Service.IsOAuthConnected)
+            {
+                log?.Invoke("未登录 Office 365, 中止同步");
+                return "请先登录 Office 365";
+            }
+
+            var svc = new WeChatWorkContactService(apiBase);
+            string accessToken;
+            try
+            {
+                accessToken = svc.GetAccessToken(corpId, corpSecret);
+            }
+            catch (WeChatWorkApiException ex)
+            {
+                log?.Invoke($"gettoken 失败: {ex.Message}");
+                return $"企业微信鉴权失败: {ex.Message}";
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"gettoken 异常: {ex.Message}");
+                return $"企业微信鉴权异常: {ex.Message}";
+            }
+
+            List<UserDetailResponse> members;
+            try
+            {
+                members = svc.GetAllMembers(accessToken, (cur, total) =>
+                {
+                    progress?.Invoke(cur, total);
+                });
+            }
+            catch (Exception ex)
+            {
+                log?.Invoke($"拉取成员异常: {ex.Message}");
+                return $"拉取企业微信成员失败: {ex.Message}";
+            }
+
+            int created = 0, updated = 0, skipped = 0, failed = 0;
+            for (int i = 0; i < members.Count; i++)
+            {
+                var u = members[i];
+                if (string.IsNullOrWhiteSpace(u.Name))
+                {
+                    skipped++;
+                    log?.Invoke($"[{i + 1}/{members.Count}] 跳过 (无姓名): userid={u.UserId}");
+                    continue;
+                }
+                // 缺 email + mobile → 无法作为唯一键, 跳过
+                if (string.IsNullOrWhiteSpace(u.Email) && string.IsNullOrWhiteSpace(u.Mobile))
+                {
+                    skipped++;
+                    log?.Invoke($"[{i + 1}/{members.Count}] 跳过 (无 email/mobile): {u.Name} ({u.UserId})");
+                    progress?.Invoke(i + 1, members.Count);
+                    continue;
+                }
+
+                var displayName = u.Name;
+                var email = u.Email ?? "";
+                var phone = u.Mobile ?? "";
+                var company = $"企业微信 ID: {u.UserId}";
+                var title = u.Position ?? "";
+
+                try
+                {
+                    // 检查是否存在以判断 created vs updated
+                    var existing = string.IsNullOrEmpty(email)
+                        ? null
+                        : _office365Service.FindContactByEmail(email);
+                    if (_office365Service.UpsertContact(displayName, email, phone, company, title))
+                    {
+                        if (existing != null) updated++;
+                        else created++;
+                        log?.Invoke($"[{i + 1}/{members.Count}] {(existing != null ? "更新" : "新建")}: {displayName} <{email}>");
+                    }
+                    else
+                    {
+                        failed++;
+                        log?.Invoke($"[{i + 1}/{members.Count}] 失败: {displayName} <{email}>");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    failed++;
+                    log?.Invoke($"[{i + 1}/{members.Count}] 异常: {displayName} - {ex.Message}");
+                }
+                progress?.Invoke(i + 1, members.Count);
+            }
+
+            var msg = $"同步完成, 共 {members.Count} 个成员 (新建 {created}, 更新 {updated}, 跳过 {skipped}, 失败 {failed})";
+            log?.Invoke($"=== {msg} ===");
+            logger?.Information("企业微信→O365: {Msg}", msg);
+            return msg;
         }
 
         private void BtnSyncCalendar_Click(object sender, EventArgs e)
