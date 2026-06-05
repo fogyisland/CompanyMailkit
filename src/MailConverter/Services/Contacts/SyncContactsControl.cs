@@ -683,10 +683,13 @@ namespace MailConverter.Services.Contacts
                         else
                             txtServerUrl.Text = "";
                         break;
-                    case 3: // 企业微信API
-                        txtServerUrl.Text = "https://qyapi.weixin.qq.com/cgi-bin/";
-                        break;
                 }
+            }
+
+            // 企业微信 API URL 是固定的 (与邮箱无关), 切到 idx 3 时若为空则自动填默认
+            if (cmbSourceType.SelectedIndex == 3 && string.IsNullOrWhiteSpace(txtServerUrl.Text))
+            {
+                txtServerUrl.Text = "https://qyapi.weixin.qq.com/cgi-bin/";
             }
         }
 
@@ -1155,9 +1158,26 @@ namespace MailConverter.Services.Contacts
                             }
                         }
                     }
-                    else if (sourceType == 3) // 企业微信API - 占位
+                    else if (sourceType == 3) // 企业微信API
                     {
-                        resultMessage = "企业微信API同步功能暂未实现";
+                        var corpId = txtUsername.Text.Trim();
+                        var corpSecret = txtPassword.Text; // 不 Trim, secret 可能含特殊字符
+                        var apiBase = string.IsNullOrWhiteSpace(txtServerUrl.Text) ? null : txtServerUrl.Text.Trim();
+
+                        if (string.IsNullOrWhiteSpace(corpId) || string.IsNullOrWhiteSpace(corpSecret))
+                        {
+                            resultMessage = "请输入 CorpID 和 CorpSecret";
+                        }
+                        else
+                        {
+                            this.Invoke(new Action(() =>
+                            {
+                                lblSyncStatus.Text = "正在调用企业微信 API...";
+                                lblSyncStatus.ForeColor = Color.Blue;
+                            }));
+                            resultMessage = MainForm.SyncContactsFromWeChatWork(
+                                corpId, corpSecret, apiBase, progressCallback, logCallback);
+                        }
                     }
 
                     // 完成后的UI更新
