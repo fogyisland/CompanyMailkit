@@ -628,7 +628,15 @@ namespace MailConverter.Services.Contacts
         /// </summary>
         private void SetSourceFieldLabels(int sourceType)
         {
-            if (sourceType == 4)
+            if (sourceType == 3)
+            {
+                // 企业微信 API
+                lblServerUrl.Text = "API 地址:";
+                lblUsername.Text = "CorpID:";
+                lblPassword.Text = "CorpSecret:";
+                txtPassword.UseSystemPasswordChar = true;
+            }
+            else if (sourceType == 4)
             {
                 lblServerUrl.Text = "EWS URL:";
                 lblUsername.Text = "用户名:";
