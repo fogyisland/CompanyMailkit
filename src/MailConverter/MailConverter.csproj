@@ -86,10 +86,16 @@
     <None Update="script\ews_deliver.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
+    <None Update="script\graph_deliver.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
     <None Update="script\generate_key.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="script\imap_to_msg.py">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+    <None Update="script\imap_to_msg_v2.py">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
     <None Update="script\extract_emails_to_msg.py">
@@ -117,5 +123,51 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </None>
   </ItemGroup>
+
+  <!--
+    保护用户运行时配置（特别是 CardDAV 账户信息、OAuth 凭据、IMAP/PST 账户等）
+    在 dotnet clean / rm -rf bin obj 时自动备份与恢复 Config/ 目录，
+    避免清掉 bin/ 后丢失所有账户配置。
+    备份位置: $(ProjectDir).configbackup\ （项目根目录下，不在 bin/obj 里）
+  -->
+  <PropertyGroup>
+    <UserConfigBackupDir>$(ProjectDir).configbackup</UserConfigBackupDir>
+  </PropertyGroup>
+
+  <Target Name="PreserveUserConfig" BeforeTargets="Clean">
+    <ItemGroup>
+      <_UserConfigFilesToPreserve Include="$(OutDir)Config\**\*.*" />
+    </ItemGroup>
+    <Message Text="[PreserveUserConfig] Backing up %(_UserConfigFilesToPreserve.Identity) -> $(UserConfigBackupDir)\%(RecursiveDir)%(Filename)%(Extension)" Importance="High" Condition="'@(_UserConfigFilesToPreserve)' != ''" />
+    <Copy SourceFiles="@(_UserConfigFilesToPreserve)"
+          DestinationFiles="$(UserConfigBackupDir)\%(RecursiveDir)%(Filename)%(Extension)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_UserConfigFilesToPreserve)' != ''" />
+  </Target>
+
+  <Target Name="RestoreUserConfig" AfterTargets="Clean" BeforeTargets="Build">
+    <PropertyGroup>
+      <_UserConfigBackupExists Condition="Exists('$(UserConfigBackupDir)')">true</_UserConfigBackupExists>
+    </PropertyGroup>
+    <ItemGroup Condition="'$(_UserConfigBackupExists)' == 'true'">
+      <_UserConfigBackupFiles Include="$(UserConfigBackupDir)\**\*.*" />
+    </ItemGroup>
+    <Message Text="[RestoreUserConfig] Restoring %(_UserConfigBackupFiles.Identity) -> $(OutDir)Config\%(RecursiveDir)%(Filename)%(Extension)" Importance="High" Condition="'@(_UserConfigBackupFiles)' != ''" />
+    <Copy SourceFiles="@(_UserConfigBackupFiles)"
+          DestinationFiles="$(OutDir)Config\%(RecursiveDir)%(Filename)%(Extension)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_UserConfigBackupFiles)' != ''" />
+  </Target>
+
+  <Target Name="SyncUserConfigToBackup" AfterTargets="Build">
+    <ItemGroup>
+      <_UserConfigFilesToSync Include="$(OutDir)Config\**\*.*" />
+    </ItemGroup>
+    <Message Text="[SyncUserConfigToBackup] Syncing %(_UserConfigFilesToSync.Identity) -> $(UserConfigBackupDir)\%(RecursiveDir)%(Filename)%(Extension)" Importance="High" Condition="'@(_UserConfigFilesToSync)' != ''" />
+    <Copy SourceFiles="@(_UserConfigFilesToSync)"
+          DestinationFiles="$(UserConfigBackupDir)\%(RecursiveDir)%(Filename)%(Extension)"
+          SkipUnchangedFiles="true"
+          Condition="'@(_UserConfigFilesToSync)' != ''" />
+  </Target>
 
 </Project>

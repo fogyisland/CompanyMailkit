@@ -46,3 +46,15 @@ Desktop.ini
 # Published
 publish/
 backups/
+
+# MSBuild preserve/restore config backup (project-local, runtime)
+.configbackup/
+
+# Build/publish outputs (custom-named)
+build_check/
+publish_test/
+CompanyMailToolkit_v*/
+~*.tmp
+*.pyc
+__pycache__/
+temp_repo/

@@ -269,6 +269,8 @@ namespace MailConverter
         private TabPage _emlTab, _ostTab, _imapFetchTab, _multiImapTab;
         private TabPage _imapExtractTab, _extractEmailTab;
         private TabPage _emlImportTab, _syncContactsTab, _syncCalendarTab;
+        private MailConverter.Services.Contacts.SyncContactsControl _syncContactsControl;
+        private MailConverter.Services.Calendars.SyncCalendarControl _syncCalendarControl;
         private TabPage _batchLoginTab, _pstImportTab, _pstContactsTab, _pstCalendarTab, _csvContactsTab, _vcfContactsTab, _csvCalendarTab, _purgeViewTab;
         private TabPage _loginTab, _accountMgmtTab, _groupMgmtTab, _mobileDeviceTab, _mailTrafficTab, _migrationTab, _whoisTab, _dnsTab, _mailSearchDeleteTab;
 
@@ -786,6 +788,30 @@ namespace MailConverter
             }
         }
 
+        // 由 UserControl 调用,将日志追加到主窗体底部 _logTextBox
+        public void AppendLogToMainWindow(string message)
+        {
+            if (string.IsNullOrEmpty(message)) return;
+            if (_logTextBox == null || _logTextBox.IsDisposed) return;
+
+            var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
+            if (_logTextBox.InvokeRequired)
+            {
+                _logTextBox.Invoke(new Action(() =>
+                {
+                    _logTextBox.AppendText(line + Environment.NewLine);
+                    _logTextBox.SelectionStart = _logTextBox.Text.Length;
+                    _logTextBox.ScrollToCaret();
+                }));
+            }
+            else
+            {
+                _logTextBox.AppendText(line + Environment.NewLine);
+                _logTextBox.SelectionStart = _logTextBox.Text.Length;
+                _logTextBox.ScrollToCaret();
+            }
+        }
+
         // 切换日志显示
         private void ToggleLogView()
         {
@@ -1147,7 +1173,7 @@ namespace MailConverter
             toolMenu.DropDownItems.Add(openLogItem);
             toolMenu.DropDownItems.Add(openDataFolderItem);
             toolMenu.DropDownItems.Add(new ToolStripSeparator());
-            var preferencesItem = new ToolStripMenuItem("首选项...", null, (s, e) => { ShowSettingsDialog(); LoadSavedOAuthAccounts(); });
+            var preferencesItem = new ToolStripMenuItem("首选项...", null, (s, e) => { ShowSettingsDialog(); RefreshAllAccountLists(); });
             toolMenu.DropDownItems.Add(preferencesItem);
 
             // 添加 Service Principal 注册功能
@@ -1374,19 +1400,19 @@ namespace MailConverter
 
             // 同步联系人子Tab
             _syncContactsTab = new TabPage("同步联系人");
-            var syncContactsControl = new MailConverter.Services.Contacts.SyncContactsControl();
-            syncContactsControl.Dock = DockStyle.Fill;
-            syncContactsControl.MainForm = this;
-            syncContactsControl.LoadAccounts();
-            _syncContactsTab.Controls.Add(syncContactsControl);
+            _syncContactsControl = new MailConverter.Services.Contacts.SyncContactsControl();
+            _syncContactsControl.Dock = DockStyle.Fill;
+            _syncContactsControl.MainForm = this;
+            _syncContactsControl.LoadAccounts();
+            _syncContactsTab.Controls.Add(_syncContactsControl);
 
             // 同步日历子Tab
             _syncCalendarTab = new TabPage("同步日历");
-            var syncCalendarControl = new MailConverter.Services.Calendars.SyncCalendarControl();
-            syncCalendarControl.Dock = DockStyle.Fill;
-            syncCalendarControl.MainForm = this;
-            syncCalendarControl.LoadAccounts();
-            _syncCalendarTab.Controls.Add(syncCalendarControl);
+            _syncCalendarControl = new MailConverter.Services.Calendars.SyncCalendarControl();
+            _syncCalendarControl.Dock = DockStyle.Fill;
+            _syncCalendarControl.MainForm = this;
+            _syncCalendarControl.LoadAccounts();
+            _syncCalendarTab.Controls.Add(_syncCalendarControl);
 
             // 添加子Tab到嵌套TabControl
             _o365NestedTabControl.TabPages.Add(_emlImportTab);
@@ -1403,6 +1429,8 @@ namespace MailConverter
             _o365NestedTabControl.SelectedIndexChanged += (s, e) =>
             {
                 SwitchPstLog("SingleUserSYNCO365");
+                // 切换子Tab时统一刷新账户下拉框（OAuth/CardDAV 等）
+                RefreshAllAccountLists();
             };
 
             // 用户批量同步到Office365 (包含登录、PST批量同步邮件到O365、purView方案批量同步子Tab)
@@ -4770,14 +4798,23 @@ namespace MailConverter
             var tblAction = new TableLayoutPanel
             {
                 Dock = DockStyle.Top,
-                ColumnCount = 3,
+                ColumnCount = 1,
                 RowCount = 2,
                 AutoSize = true,
                 Padding = new Padding(5),
                 RowStyles = {
                     new RowStyle(SizeType.AutoSize),
-                    new RowStyle(SizeType.AutoSize)
-                },
+                    new RowStyle(SizeType.Percent, 100)
+                }
+            };
+
+            // 第一行：按钮 + 进度条 + 状态标签
+            var topRow = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                Padding = new Padding(5),
                 ColumnStyles = {
                     new ColumnStyle(SizeType.AutoSize),
                     new ColumnStyle(SizeType.Percent, 100),
@@ -4820,11 +4857,35 @@ namespace MailConverter
                 Name = "lblO365Status"
             };
 
-            tblAction.Controls.Add(btnO365Import, 0, 0);
-            tblAction.SetRowSpan(btnO365Import, 2);
-            tblAction.Controls.Add(progressO365, 1, 0);
-            tblAction.Controls.Add(lblProgressPercent, 2, 0);
-            tblAction.Controls.Add(lblO365Status, 1, 1);
+            topRow.Controls.Add(btnO365Import, 0, 0);
+            topRow.Controls.Add(progressO365, 1, 0);
+            topRow.Controls.Add(lblProgressPercent, 2, 0);
+
+            // 第二行：状态标签
+            var statusRow = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 1,
+                RowCount = 1
+            };
+            statusRow.Controls.Add(lblO365Status, 0, 0);
+
+            var txtO365ImportLog = new TextBox
+            {
+                Name = "txtO365ImportLog",
+                Dock = DockStyle.Fill,
+                Multiline = true,
+                ReadOnly = true,
+                Height = 120,
+                ScrollBars = ScrollBars.Vertical,
+                BackColor = Color.FromArgb(30, 30, 30),
+                ForeColor = Color.LightGreen,
+                Font = new Font("Consolas", 9F)
+            };
+
+            tblAction.Controls.Add(topRow, 0, 0);
+            tblAction.Controls.Add(statusRow, 0, 1);
+            tblAction.Controls.Add(txtO365ImportLog, 0, 2);
 
             grpAction.Controls.Add(tblAction);
             mainLayout.Controls.Add(grpAction, 0, 2);
@@ -4918,6 +4979,26 @@ namespace MailConverter
             if (txtO365ClientId != null) txtO365ClientId.Text = clientId;
             if (txtO365TenantId != null) txtO365TenantId.Text = tenantId;
             if (txtO365Email != null) txtO365Email.Text = email;
+
+            // 同步写入 EML/PST 面板的 ClientID/TenantId/Email
+            // (MainForm 字段会被最后创建的 PST 面板覆盖,这里额外同步到两个面板的 textbox,
+            //  保证 OAuth 登录时 BtnO365OAuthLogin_Click 能从当前面板正确读取)
+            CopyTextToO365Panel("EMLO365Panel", clientId, tenantId, email);
+            CopyTextToO365Panel("PSTO365Panel", clientId, tenantId, email);
+        }
+
+        private void CopyTextToO365Panel(string panelName, string clientId, string tenantId, string email)
+        {
+            var panel = this.Controls.Find(panelName, true).FirstOrDefault() as Panel;
+            if (panel == null) return;
+
+            var clientIdBox = panel.Controls.Find("txtO365ClientId", true).FirstOrDefault() as TextBox;
+            var tenantIdBox = panel.Controls.Find("txtO365TenantId", true).FirstOrDefault() as TextBox;
+            var adminBox = panel.Controls.Find("txtO365AdminAccount", true).FirstOrDefault() as TextBox;
+
+            if (clientIdBox != null) clientIdBox.Text = clientId;
+            if (tenantIdBox != null) tenantIdBox.Text = tenantId;
+            if (adminBox != null) adminBox.Text = email;
         }
 
         /// <summary>
@@ -4932,15 +5013,12 @@ namespace MailConverter
         {
             try
             {
-                // 根据sender的Tag确定是哪个页签
+                // 根据sender的Tag确定是哪个页签 (仅用于状态标签定位,字段统一从 MainForm 内部字段读取)
                 var btn = sender as Button;
                 string panelName = btn?.Tag?.ToString() == "PST" ? "PSTO365Panel" : "EMLO365Panel";
                 var panel = this.Controls.Find(panelName, true).FirstOrDefault() as Panel;
 
-                // 查找页签中的控件
-                var txtClientId = panel?.Controls.Find("txtO365ClientId", true).FirstOrDefault() as TextBox;
-                var txtTenantId = panel?.Controls.Find("txtO365TenantId", true).FirstOrDefault() as TextBox;
-                var txtEmail = panel?.Controls.Find("txtO365AdminAccount", true).FirstOrDefault() as TextBox;
+                // 状态标签从面板中查找 (PST/EML 用自己的 lblO365Status;UserControl 走 3 秒轮询)
                 var lblStatus = panel?.Controls.Find("lblO365Status", true).FirstOrDefault() as Label;
 
                 if (lblStatus != null)
@@ -4949,8 +5027,21 @@ namespace MailConverter
                     lblStatus.ForeColor = Color.Blue;
                 }
 
-                string clientId = txtClientId?.Text?.Trim() ?? "";
-                string email = txtEmail?.Text?.Trim() ?? "";
+                // 从当前面板中读取 ClientID/TenantId/Email
+                // (MainForm 的 txtO365ClientId/TenantId 字段会被最后创建的 PST 面板覆盖，
+                //  因此 EML 面板的输入值无法通过 MainForm 字段读到)
+                var txtClientIdBox = panel?.Controls.Find("txtO365ClientId", true).FirstOrDefault() as TextBox;
+                var txtTenantIdBox = panel?.Controls.Find("txtO365TenantId", true).FirstOrDefault() as TextBox;
+                string clientId = txtClientIdBox?.Text?.Trim() ?? "";
+                string tenantId = txtTenantIdBox?.Text?.Trim() ?? "";
+                string email = txtO365Email?.Text?.Trim() ?? "";
+
+                // 兼容:UserControl 写入 txtO365Email;EML/PST 面板使用 txtO365AdminAccount
+                if (string.IsNullOrEmpty(email))
+                {
+                    var txtAdminAccount = panel?.Controls.Find("txtO365AdminAccount", true).FirstOrDefault() as TextBox;
+                    email = txtAdminAccount?.Text?.Trim() ?? "";
+                }
 
                 if (string.IsNullOrEmpty(clientId))
                 {
@@ -4975,13 +5066,18 @@ namespace MailConverter
 
                 // Build OAuth URL
                 string redirectUri = Uri.EscapeDataString("http://localhost:5555/");
-                // 使用 Microsoft Graph 委托权限 (Mail.ReadWrite)
+                // 使用 Microsoft Graph 委托权限 (Mail.ReadWrite + Contacts/Calendars 读写)
                 // 之前用 EWS.AccessAsUser.All 会让 token 的 aud=outlook.office365.com，
                 // 调 Graph API 时会报 "Invalid audience"。
-                string scope = Uri.EscapeDataString("https://graph.microsoft.com/Mail.ReadWrite");
+                // 加入 Contacts.ReadWrite/Calendars.ReadWrite 是为了走 Graph 路径创建联系人/日历
+                // (EWS 路径在 Graph aud token 下能"成功"返回但联系人实际未保存到 O365)
+                string scope = Uri.EscapeDataString(
+                    "https://graph.microsoft.com/Mail.ReadWrite " +
+                    "https://graph.microsoft.com/Contacts.ReadWrite " +
+                    "https://graph.microsoft.com/Calendars.ReadWrite " +
+                    "offline_access");
 
                 // 获取租户 ID，如果为空则使用 common
-                string tenantId = txtTenantId?.Text?.Trim();
                 string tenant = string.IsNullOrEmpty(tenantId) ? "common" : tenantId;
 
                 string authUrl = $"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize?" +
@@ -5068,12 +5164,11 @@ namespace MailConverter
                         {"code", authCode},
                         {"redirect_uri", "http://localhost:5555/"},
                         {"grant_type", "authorization_code"},
-                        {"scope", "https://graph.microsoft.com/Mail.ReadWrite"}
+                        {"scope", "https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Contacts.ReadWrite https://graph.microsoft.com/Calendars.ReadWrite offline_access"}
                     });
 
                     // 使用相同的租户 ID 获取令牌
-                    string tId = txtTenantId?.Text?.Trim();
-                    string tName = string.IsNullOrEmpty(tId) ? "common" : tId;
+                    string tName = string.IsNullOrEmpty(tenantId) ? "common" : tenantId;
                     var tokenResponse = await httpClient.PostAsync($"https://login.microsoftonline.com/{tName}/oauth2/v2.0/token", tokenRequest);
                     var tokenContent = await tokenResponse.Content.ReadAsStringAsync();
 
@@ -14122,6 +14217,29 @@ namespace MailConverter
         }
 
         /// <summary>
+        /// 读取 CSV 文件的原始内容(不切行)。由 ParseCsvRecords 在字符级别跨行跟踪引号状态。
+        /// 优先尝试 UTF-8(BOM)、UTF-8、GBK、GB2312,失败回退到系统默认编码。
+        /// </summary>
+        private string ReadCsvFileContent(string filePath)
+        {
+            foreach (var enc in new[] {
+                new System.Text.UTF8Encoding(true),   // UTF-8 with BOM
+                System.Text.Encoding.UTF8,            // UTF-8 without BOM
+                System.Text.Encoding.GetEncoding("GBK"),
+                System.Text.Encoding.GetEncoding("GB2312")
+            })
+            {
+                try
+                {
+                    var content = File.ReadAllText(filePath, enc);
+                    if (!string.IsNullOrEmpty(content)) return content;
+                }
+                catch { }
+            }
+            return File.ReadAllText(filePath);
+        }
+
+        /// <summary>
         /// 从字典中获取值，支持中英文键名
         /// </summary>
         private string GetDictValue(Dictionary<string, string> dict, string chineseKey, string englishKey)
@@ -14134,8 +14252,89 @@ namespace MailConverter
         }
 
         /// <summary>
-        /// 正确解析CSV行（处理带引号和转义字符的字段）
+        /// 解析整个 CSV 文件内容,返回每一行(记录)对应的字段数组。
+        /// 关键:正确处理跨物理行的引号字段(Outlook 导出的"说明"列里经常包含换行符)。
+        /// 不依赖预先按行切分,直接在字符级别跟踪 inQuotes 状态。
         /// </summary>
+        private List<string[]> ParseCsvRecords(string content)
+        {
+            var rows = new List<string[]>();
+            var currentRow = new List<string>();
+            var current = new StringBuilder();
+            bool inQuotes = false;
+
+            for (int i = 0; i < content.Length; i++)
+            {
+                char c = content[i];
+
+                if (inQuotes)
+                {
+                    if (c == '"')
+                    {
+                        if (i + 1 < content.Length && content[i + 1] == '"')
+                        {
+                            // 转义引号 ""
+                            current.Append('"');
+                            i++;
+                        }
+                        else
+                        {
+                            inQuotes = false;
+                        }
+                    }
+                    else
+                    {
+                        // 引号内: 任何字符(包括 \r \n)都原样进 cell
+                        current.Append(c);
+                    }
+                }
+                else
+                {
+                    if (c == '"')
+                    {
+                        inQuotes = true;
+                    }
+                    else if (c == ',')
+                    {
+                        currentRow.Add(current.ToString());
+                        current.Clear();
+                    }
+                    else if (c == '\r')
+                    {
+                        // 可能是 \r\n 或单独的 \r,统一处理
+                        if (i + 1 < content.Length && content[i + 1] == '\n')
+                        {
+                            i++; // 跳过 \n
+                        }
+                        currentRow.Add(current.ToString());
+                        rows.Add(currentRow.ToArray());
+                        currentRow = new List<string>();
+                        current.Clear();
+                    }
+                    else if (c == '\n')
+                    {
+                        currentRow.Add(current.ToString());
+                        rows.Add(currentRow.ToArray());
+                        currentRow = new List<string>();
+                        current.Clear();
+                    }
+                    else
+                    {
+                        current.Append(c);
+                    }
+                }
+            }
+
+            // 收尾: 文件可能不以换行结束
+            if (current.Length > 0 || currentRow.Count > 0)
+            {
+                currentRow.Add(current.ToString());
+                rows.Add(currentRow.ToArray());
+            }
+
+            return rows;
+        }
+
         private string[] ParseCsvValues(string line)
         {
             var result = new List<string>();
@@ -18218,10 +18417,13 @@ namespace MailConverter
             }
         }
 
-        public string SyncContactsFromCsv(string filePath)
+        public string SyncContactsFromCsv(string filePath, Action<int, int> progress = null, Action<string> log = null)
         {
             Serilog.Log.Information("========== 开始CSV联系人同步 ==========");
             Serilog.Log.Information("文件路径: {FilePath}", filePath);
+            log?.Invoke($"========== 开始CSV联系人同步 ==========");
+            log?.Invoke($"文件路径: {filePath}");
+            TransferPstLogService.Log("synccontacts", $"开始CSV联系人同步: {filePath}");
 
             int totalRecords = 0;
             int successCount = 0;
@@ -18249,11 +18451,15 @@ namespace MailConverter
                         csv.ReadHeader();
                         var headers = csv.HeaderRecord;
                         Serilog.Log.Information("CSV表头: {Headers}", string.Join(", ", headers));
+                        log?.Invoke($"CSV表头: {string.Join(", ", headers)}");
 
                         var records = csv.GetRecords<dynamic>().ToList();
                         totalRecords = records.Count;
                         Serilog.Log.Information("CSV总记录数: {Count}", totalRecords);
+                        log?.Invoke($"CSV总记录数: {totalRecords}");
+                        progress?.Invoke(0, totalRecords);
 
+                        int processed = 0;
                         foreach (var record in records)
                         {
                             try
@@ -18312,6 +18518,8 @@ namespace MailConverter
                                 if (string.IsNullOrWhiteSpace(email))
                                 {
                                     Serilog.Log.Warning("跳过 - 邮箱为空, Name={Name}", displayName);
+                                    TransferPstLogService.Log("synccontacts", $"跳过 - 邮箱为空, Name={displayName}");
+                                    log?.Invoke($"[跳过] 邮箱为空: {displayName}");
                                     skipCount++;
                                     continue;
                                 }
@@ -18319,28 +18527,42 @@ namespace MailConverter
                                 if (!email.Contains("@") || !email.Contains("."))
                                 {
                                     Serilog.Log.Warning("跳过 - 邮箱格式无效: {Email}, Name={Name}", email, displayName);
+                                    TransferPstLogService.Log("synccontacts", $"跳过 - 邮箱格式无效: {email}, Name={displayName}");
+                                    log?.Invoke($"[跳过] 邮箱格式无效: {email}");
                                     skipCount++;
                                     continue;
                                 }
 
                                 Serilog.Log.Information("正在创建联系人 - Name={Name}, Email={Email}", displayName, email);
+                                TransferPstLogService.Log("synccontacts", $"创建联系人: {displayName} <{email}>");
                                 bool result = _office365Service.CreateContact(displayName, email);
 
                                 if (result)
                                 {
                                     successCount++;
                                     Serilog.Log.Information("成功 - Name={Name}, Email={Email}", displayName, email);
+                                    TransferPstLogService.Log("synccontacts", $"成功: {displayName} <{email}>");
+                                    log?.Invoke($"[成功] {displayName} <{email}>");
                                 }
                                 else
                                 {
                                     errorCount++;
                                     Serilog.Log.Warning("失败 - Name={Name}, Email={Email}", displayName, email);
+                                    TransferPstLogService.Log("synccontacts", $"失败: {displayName} <{email}>");
+                                    log?.Invoke($"[失败] {displayName} <{email}>");
                                 }
                             }
                             catch (Exception ex)
                             {
                                 errorCount++;
                                 Serilog.Log.Error(ex, "记录处理异常: {Error}", ex.Message);
+                                TransferPstLogService.Log("synccontacts", $"记录处理异常: {ex.Message}");
+                                log?.Invoke($"[异常] {ex.Message}");
+                            }
+                            finally
+                            {
+                                processed++;
+                                progress?.Invoke(processed, totalRecords);
                             }
                         }
                     }
@@ -18349,28 +18571,41 @@ namespace MailConverter
                 resultMsg = $"CSV同步完成: 总计{totalRecords}条, 成功{successCount}条, 跳过{skipCount}条, 失败{errorCount}条";
                 Serilog.Log.Information("========== CSV联系人同步完成 ==========");
                 Serilog.Log.Information(resultMsg);
+                TransferPstLogService.Log("synccontacts", resultMsg);
+                log?.Invoke("========== CSV联系人同步完成 ==========");
+                log?.Invoke(resultMsg);
             }
             catch (Exception ex)
             {
                 Serilog.Log.Error(ex, "CSV同步异常: {Error}", ex.Message);
+                TransferPstLogService.Log("synccontacts", $"CSV同步异常: {ex.Message}");
+                log?.Invoke($"[异常] CSV同步异常: {ex.Message}");
                 return $"CSV同步异常: {ex.Message}";
             }
 
             return resultMsg;
         }
 
-        public string SyncContactsFromVcf(string filePath)
+        public string SyncContactsFromVcf(string filePath, Action<int, int> progress = null, Action<string> log = null)
         {
             Serilog.Log.Information("========== 开始VCF联系人同步 ==========");
             Serilog.Log.Information("文件路径: {FilePath}", filePath);
+            log?.Invoke($"========== 开始VCF联系人同步 ==========");
+            log?.Invoke($"文件路径: {filePath}");
+            TransferPstLogService.Log("synccontacts", $"开始VCF联系人同步: {filePath}");
 
             var vcards = File.ReadAllText(filePath);
             int totalCount = 0, successCount = 0, skipCount = 0, errorCount = 0;
+
+            // 预扫描统计 vCard 数量 (用于进度)
+            int totalVcards = System.Text.RegularExpressions.Regex.Matches(vcards, @"BEGIN:VCARD", System.Text.RegularExpressions.RegexOptions.IgnoreCase).Count;
+            progress?.Invoke(0, totalVcards);
 
             // 解析 vCard
             var lines = vcards.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
             bool inVCard = false;
             VCardData current = new VCardData();
+            int processed = 0;
 
             foreach (var line in lines)
             {
@@ -18385,6 +18620,7 @@ namespace MailConverter
                     {
                         Serilog.Log.Information("VCF联系人: Name={Name}, Email={Email}, Phone={Phone}, Company={Company}, Title={Title}",
                             current.DisplayName, current.Email, current.Phone, current.Company, current.Title);
+                        TransferPstLogService.Log("synccontacts", $"创建联系人: {current.DisplayName} <{current.Email}>");
 
                         bool result = _office365Service.CreateContact(
                             current.DisplayName,
@@ -18393,16 +18629,30 @@ namespace MailConverter
                             current.Company,
                             current.Title);
 
-                        if (result) successCount++;
-                        else errorCount++;
+                        if (result)
+                        {
+                            successCount++;
+                            log?.Invoke($"[成功] {current.DisplayName} <{current.Email}>");
+                            TransferPstLogService.Log("synccontacts", $"成功: {current.DisplayName} <{current.Email}>");
+                        }
+                        else
+                        {
+                            errorCount++;
+                            log?.Invoke($"[失败] {current.DisplayName} <{current.Email}>");
+                            TransferPstLogService.Log("synccontacts", $"失败: {current.DisplayName} <{current.Email}>");
+                        }
                         totalCount++;
                     }
                     else
                     {
                         skipCount++;
                         Serilog.Log.Warning("跳过VCF联系人: 无邮箱, Name={Name}", current.DisplayName);
+                        TransferPstLogService.Log("synccontacts", $"跳过 - 无邮箱: {current.DisplayName}");
+                        log?.Invoke($"[跳过] 无邮箱: {current.DisplayName}");
                     }
                     inVCard = false;
+                    processed++;
+                    progress?.Invoke(processed, totalVcards);
                 }
                 else if (inVCard)
                 {
@@ -18413,6 +18663,9 @@ namespace MailConverter
             string resultMsg = $"VCF同步完成: 总计{totalCount}条, 成功{successCount}条, 跳过{skipCount}条, 失败{errorCount}条";
             Serilog.Log.Information("========== VCF联系人同步完成 ==========");
             Serilog.Log.Information(resultMsg);
+            TransferPstLogService.Log("synccontacts", resultMsg);
+            log?.Invoke("========== VCF联系人同步完成 ==========");
+            log?.Invoke(resultMsg);
             return resultMsg;
         }
 
@@ -18565,18 +18818,39 @@ namespace MailConverter
             }
         }
 
-        public string SyncCalendarFromIcs(string filePath)
+        public string SyncCalendarFromIcs(string filePath, TimeZoneInfo sourceTimeZone = null, Action<int, int, string> progress = null)
         {
-            var icsContent = File.ReadAllText(filePath);
-            int count = 0;
+            // ICS 导入走独立的 o365single/SYNCICS 目录,便于单独跟踪 ICS 处理逻辑
+            var logger = Program.CalendarIcsSyncLogger();
+            LogCalInfo(logger, "=== ICS 日历同步开始 ===");
+            LogCalInfo(logger, "文件: {File}", filePath);
+            LogCalInfo(logger, "源时区: {Tz}", sourceTimeZone?.Id ?? "未指定(默认 UTC+8)");
 
-            var lines = icsContent.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            var icsContent = File.ReadAllText(filePath);
+            var rawLines = icsContent.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            // Outlook/Outlook.com 导出的 ICS 会把长行按 75 字节折行,折行以空格或 Tab 开头
+            // 解析前先把续行合并,避免 SUMMARY/DESCRIPTION 跨多行时丢内容
+            var lines = UnfoldIcsLines(rawLines);
+            LogCalInfo(logger, "原始行数: {Raw}, 展开后续行后行数: {Lines}", rawLines.Length, lines.Length);
+
+            int count = 0;
+            int skipped = 0;
+            int eventBlocks = 0;
             string currentSummary = "";
             DateTime currentStart = DateTime.MinValue;
             DateTime currentEnd = DateTime.MinValue;
             string currentDescription = "";
             string currentLocation = "";
             bool inEvent = false;
+
+            // 预扫描一次估算 VEVENT 总数,用于显示 "正在处理 N/Total" 进度
+            int totalEvents = 0;
+            foreach (var ln in lines)
+            {
+                if (ln.StartsWith("BEGIN:VEVENT", StringComparison.OrdinalIgnoreCase))
+                    totalEvents++;
+            }
+            progress?.Invoke(0, totalEvents, $"共发现 {totalEvents} 个事件,开始创建...");
 
             foreach (var line in lines)
             {
@@ -18591,50 +18865,121 @@ namespace MailConverter
                 }
                 else if (line.StartsWith("END:VEVENT", StringComparison.OrdinalIgnoreCase))
                 {
+                    eventBlocks++;
                     if (currentStart != DateTime.MinValue)
                     {
-                        _office365Service.CreateCalendarEvent(currentSummary, currentStart, currentEnd, currentDescription, currentLocation);
-                        count++;
+                        // ICS 里 DTSTART 的 wall-clock 是源时区(local)的,直接以 Kind=Unspecified
+                        // 传给 Graph 即可(Graph 会按 mailbox tz 存,显示 = CSV/ICS 里的 wall-clock)。
+                        // 不要做 UTC 转换,否则再送进 Graph 会和"东八区"叠加导致 8 小时偏移。
+                        var startWall = DateTime.SpecifyKind(currentStart, DateTimeKind.Unspecified);
+                        var endWall = DateTime.SpecifyKind(currentEnd == DateTime.MinValue
+                            ? currentStart.AddHours(1) : currentEnd, DateTimeKind.Unspecified);
+                        if (_office365Service.CreateCalendarEvent(currentSummary, startWall, endWall, currentDescription, currentLocation))
+                        {
+                            count++;
+                            LogCalInfo(logger, "事件 {Idx} 创建成功: {Summary} ({Start:yyyy-MM-dd HH:mm:ss} -> {End:yyyy-MM-dd HH:mm:ss})",
+                                eventBlocks, currentSummary, startWall, endWall);
+                        }
+                        else
+                        {
+                            skipped++;
+                            LogCalWarn(logger, "事件 {Idx} 创建失败: {Summary}", eventBlocks, currentSummary);
+                        }
                     }
+                    else
+                    {
+                        skipped++;
+                        LogCalWarn(logger, "事件 {Idx} 缺少 DTSTART,跳过: {Summary}", eventBlocks, currentSummary);
+                    }
+                    // 实时更新进度:每处理一个事件都调用一次 callback
+                    var summaryShort = currentSummary.Length > 20 ? currentSummary.Substring(0, 20) + "..." : currentSummary;
+                    progress?.Invoke(eventBlocks, totalEvents, $"正在创建 {eventBlocks}/{totalEvents} - {summaryShort} (成功 {count}, 跳过 {skipped})");
                     inEvent = false;
                 }
                 else if (inEvent)
                 {
-                    if (line.StartsWith("SUMMARY:", StringComparison.OrdinalIgnoreCase))
-                        currentSummary = line.Substring(8);
-                    else if (line.StartsWith("DESCRIPTION:", StringComparison.OrdinalIgnoreCase))
-                        currentDescription = line.Substring(12);
-                    else if (line.StartsWith("LOCATION:", StringComparison.OrdinalIgnoreCase))
-                        currentLocation = line.Substring(9);
-                    else if (line.StartsWith("DTSTART:", StringComparison.OrdinalIgnoreCase))
+                    // Outlook/Apple Calendar 导出的 ICS 经常带参数,例如:
+                    //   SUMMARY;LANGUAGE=zh-CN:午餐
+                    //   DESCRIPTION;ENCODING=QUOTED-PRINTABLE:...
+                    //   LOCATION;X-APPLE-MAPKIT-HANDLE=...:总部
+                    // 用 StartsWith(propertyName) 而不是 "PROPERTY:" 来同时匹配参数式和无参式
+                    if (line.StartsWith("SUMMARY", StringComparison.OrdinalIgnoreCase) &&
+                        (line.Length > 7 && (line[7] == ':' || line[7] == ';')))
                     {
-                        if (DateTime.TryParseExact(line.Substring(8), "yyyyMMddTHHmmssZ", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var dt))
-                            currentStart = dt;
+                        currentSummary = ExtractIcsValueAfterColon(line, "SUMMARY");
                     }
-                    else if (line.StartsWith("DTEND:", StringComparison.OrdinalIgnoreCase))
+                    else if (line.StartsWith("DESCRIPTION", StringComparison.OrdinalIgnoreCase) &&
+                             (line.Length > 11 && (line[11] == ':' || line[11] == ';')))
                     {
-                        if (DateTime.TryParseExact(line.Substring(6), "yyyyMMddTHHmmssZ", System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.AssumeUniversal, out var dt))
-                            currentEnd = dt;
+                        currentDescription = ExtractIcsValueAfterColon(line, "DESCRIPTION");
+                    }
+                    else if (line.StartsWith("LOCATION", StringComparison.OrdinalIgnoreCase) &&
+                             (line.Length > 8 && (line[8] == ':' || line[8] == ';')))
+                    {
+                        currentLocation = ExtractIcsValueAfterColon(line, "LOCATION");
+                    }
+                    else if (line.StartsWith("DTSTART", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // 兼容: DTSTART:VALUE / DTSTART;TZID="xxx":VALUE / DTSTART;VALUE=DATE:20240604
+                        var (dateValue, tzId, isAllDay) = SplitIcsDateLine(line, "DTSTART");
+                        TryParseIcsDateTime(dateValue, tzId, sourceTimeZone, isAllDay, out currentStart);
+                    }
+                    else if (line.StartsWith("DTEND", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var (dateValue, tzId, isAllDay) = SplitIcsDateLine(line, "DTEND");
+                        TryParseIcsDateTime(dateValue, tzId, sourceTimeZone, isAllDay, out currentEnd);
                     }
                 }
             }
 
-            return $"同步完成，共 {count} 个日历事件";
+            LogCalInfo(logger, "=== ICS 同步完成 === 总事件块: {Total}, 成功: {Count}, 跳过: {Skipped}", eventBlocks, count, skipped);
+
+            // 诊断:把 O365 日历文件夹里最近 10 条事件的 Subject+Start 列出来,排查"提示成功但日历里没有"的问题
+            try
+            {
+                LogCalInfo(logger, "--- 诊断:查询 O365 日历文件夹实际状态 ---");
+                _office365Service.ListRecentCalendarEvents(10);
+            }
+            catch (Exception ex)
+            {
+                LogCalWarn(logger, "ListRecentCalendarEvents 诊断调用失败: {Err}", ex.Message);
+            }
+
+            return skipped > 0
+                ? $"同步完成，共 {count} 个日历事件(跳过 {skipped} 条)"
+                : $"同步完成，共 {count} 个日历事件";
         }
 
-        public string SyncCalendarFromVcs(string filePath)
+        public string SyncCalendarFromVcs(string filePath, TimeZoneInfo sourceTimeZone = null, Action<int, int, string> progress = null)
         {
+            var logger = Program.CalendarSyncLogger();
+            LogCalInfo(logger, "=== VCS 日历同步开始 ===");
+            LogCalInfo(logger, "文件: {File}", filePath);
+            LogCalInfo(logger, "源时区: {Tz}", sourceTimeZone?.Id ?? "未指定(默认 UTC+8)");
+
             // VCS 格式解析
             var vcsContent = File.ReadAllText(filePath);
-            int count = 0;
-
             var lines = vcsContent.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+            LogCalInfo(logger, "文件行数: {Lines}", lines.Length);
+
+            int count = 0;
+            int skipped = 0;
+            int eventBlocks = 0;
             string currentSummary = "";
             DateTime currentStart = DateTime.MinValue;
             DateTime currentEnd = DateTime.MinValue;
             string currentDescription = "";
             string currentLocation = "";
             bool inEvent = false;
+
+            // VCS 走 DTSTART:xxx 计数
+            int totalEvents = 0;
+            foreach (var ln in lines)
+            {
+                if (ln.StartsWith("DTSTART", StringComparison.OrdinalIgnoreCase) && ln.IndexOf(':') > 0)
+                    totalEvents++;
+            }
+            progress?.Invoke(0, totalEvents, $"共发现 {totalEvents} 个事件,开始创建...");
 
             foreach (var line in lines)
             {
@@ -18649,11 +18994,28 @@ namespace MailConverter
                 }
                 else if (line.StartsWith("END:VEVENT", StringComparison.OrdinalIgnoreCase))
                 {
+                    eventBlocks++;
                     if (currentStart != DateTime.MinValue)
                     {
-                        _office365Service.CreateCalendarEvent(currentSummary, currentStart, currentEnd, currentDescription, currentLocation);
-                        count++;
+                        var (startUtc, endUtc) = NormalizeEventTimes(currentStart, currentEnd, sourceTimeZone);
+                        if (_office365Service.CreateCalendarEvent(currentSummary, startUtc, endUtc, currentDescription, currentLocation))
+                        {
+                            count++;
+                            LogCalInfo(logger, "事件 {Idx} 创建成功: {Summary}", eventBlocks, currentSummary);
+                        }
+                        else
+                        {
+                            skipped++;
+                            LogCalWarn(logger, "事件 {Idx} 创建失败: {Summary}", eventBlocks, currentSummary);
+                        }
                     }
+                    else
+                    {
+                        skipped++;
+                        LogCalWarn(logger, "事件 {Idx} 缺少 DTSTART,跳过: {Summary}", eventBlocks, currentSummary);
+                    }
+                    var summaryShort = currentSummary.Length > 20 ? currentSummary.Substring(0, 20) + "..." : currentSummary;
+                    progress?.Invoke(eventBlocks, totalEvents, $"正在创建 {eventBlocks}/{totalEvents} - {summaryShort} (成功 {count}, 跳过 {skipped})");
                     inEvent = false;
                 }
                 else if (inEvent)
@@ -18674,13 +19036,500 @@ namespace MailConverter
                 }
             }
 
-            return $"同步完成，共 {count} 个日历事件";
+            LogCalInfo(logger, "=== VCS 同步完成 === 总事件块: {Total}, 成功: {Count}, 跳过: {Skipped}", eventBlocks, count, skipped);
+            return skipped > 0
+                ? $"同步完成，共 {count} 个日历事件(跳过 {skipped} 条)"
+                : $"同步完成，共 {count} 个日历事件";
         }
 
         private string SyncCalendarFromMsg(string filePath)
         {
             // MSG 日历同步需要 Outlook 支持
             return "MSG 格式日历同步需要 Outlook 支持";
+        }
+
+        /// <summary>
+        /// 日历同步日志辅助方法 - 同时写入文件日志(Serilog)与主窗体底部 _logTextBox
+        /// </summary>
+        private void LogCalInfo(Serilog.ILogger logger, string messageTemplate, params object[] args)
+        {
+            logger.Information(messageTemplate, args);
+            var formatted = FormatNamedPlaceholders(messageTemplate, args);
+            AppendLogToMainWindow($"[日历同步] {formatted}");
+        }
+
+        private void LogCalWarn(Serilog.ILogger logger, string messageTemplate, params object[] args)
+        {
+            logger.Warning(messageTemplate, args);
+            var formatted = FormatNamedPlaceholders(messageTemplate, args);
+            AppendLogToMainWindow($"[日历同步] [WARN] {formatted}");
+        }
+
+        private void LogCalError(Serilog.ILogger logger, string messageTemplate, params object[] args)
+        {
+            logger.Error(messageTemplate, args);
+            var formatted = FormatNamedPlaceholders(messageTemplate, args);
+            AppendLogToMainWindow($"[日历同步] [ERROR] {formatted}");
+        }
+
+        /// <summary>
+        /// 把 Serilog 模板里的命名占位符 {Name} / {Name:format} 按 args 出现顺序替换为字符串值。
+        /// 不能用 string.Format(messageTemplate, args),它只认 {0}{1} 这类数字索引,会抛 FormatException。
+        /// 不支持同一占位符重复引用(每次出现都会消耗下一个 arg)。
+        /// </summary>
+        private static string FormatNamedPlaceholders(string template, object[] args)
+        {
+            if (string.IsNullOrEmpty(template)) return template;
+            if (args == null || args.Length == 0) return template;
+
+            var sb = new System.Text.StringBuilder(template.Length + 64);
+            int i = 0;
+            int argIdx = 0;
+            while (i < template.Length)
+            {
+                if (i + 1 < template.Length && template[i] == '{' && template[i + 1] == '{')
+                {
+                    // 转义 {{
+                    sb.Append('{');
+                    i += 2;
+                }
+                else if (i + 1 < template.Length && template[i] == '}' && template[i + 1] == '}')
+                {
+                    // 转义 }}
+                    sb.Append('}');
+                    i += 2;
+                }
+                else if (template[i] == '{')
+                {
+                    int end = template.IndexOf('}', i + 1);
+                    if (end < 0) { sb.Append(template[i]); i++; continue; }
+
+                    var placeholder = template.Substring(i + 1, end - i - 1);
+                    // 去掉 :format 后缀
+                    int colonIdx = placeholder.IndexOf(':');
+                    if (colonIdx >= 0) placeholder = placeholder.Substring(0, colonIdx);
+
+                    if (argIdx < args.Length)
+                    {
+                        var v = args[argIdx++];
+                        sb.Append(v?.ToString() ?? "null");
+                    }
+                    else
+                    {
+                        // 没有对应参数,保留原占位符
+                        sb.Append('{').Append(placeholder).Append('}');
+                    }
+                    i = end + 1;
+                }
+                else if (template[i] == '}')
+                {
+                    // 单独的 } 视为字面量
+                    sb.Append('}');
+                    i++;
+                }
+                else
+                {
+                    sb.Append(template[i]);
+                    i++;
+                }
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// 从 CSV 文件同步日历到 O365
+        /// CSV 列: 主题,开始时间,结束时间,地点,正文,必需参会人,可选参会人
+        /// 时间格式: 2024-01-01 08:00:00
+        /// </summary>
+        public string SyncCalendarFromCsv(string filePath, TimeZoneInfo sourceTimeZone = null, Action<int, int, string> progress = null)
+        {
+            var logger = Program.CalendarSyncLogger();
+            LogCalInfo(logger, "=== CSV 日历同步开始 ===");
+            LogCalInfo(logger, "文件: {File}", filePath);
+            LogCalInfo(logger, "源时区: {Tz}", sourceTimeZone?.Id ?? "未指定(默认 UTC+8)");
+
+            if (_office365Service == null || !_office365Service.IsOAuthConnected)
+            {
+                LogCalWarn(logger, "未登录 Office 365,中止同步");
+                return "请先登录 Office 365";
+            }
+            LogCalInfo(logger, "O365 已登录, 邮箱: {Email}", _office365Service.Email);
+
+            // 1. 读原始文件内容 (按编码探测)
+            var content = ReadCsvFileContent(filePath);
+            if (string.IsNullOrEmpty(content))
+            {
+                LogCalWarn(logger, "CSV 文件为空或无法读取");
+                return "CSV 文件为空或无法读取";
+            }
+
+            // 2. 用多行感知的解析器一次性拆出所有记录(行) - 解决 Outlook "说明" 列含换行符导致记录被拆碎的问题
+            var records = ParseCsvRecords(content);
+            LogCalInfo(logger, "解析后记录数: {Rows}", records.Count);
+            if (records.Count < 2)
+            {
+                LogCalWarn(logger, "CSV 文件为空或仅含表头");
+                return "CSV 文件为空或仅含表头";
+            }
+
+            var headers = records[0];
+            if (headers.Length == 0 || string.IsNullOrWhiteSpace(headers[0]))
+            {
+                LogCalWarn(logger, "CSV 表头解析失败,第一行: {FirstLine}", string.Join("|", headers));
+                return "CSV 表头解析失败";
+            }
+            // Outlook 导出的 CSV 部分列名带 "**" 注释(标记必填/可选),统一剥掉便于按规范列名匹配
+            for (int h = 0; h < headers.Length; h++)
+            {
+                headers[h] = headers[h].Trim().TrimEnd('*').Trim();
+            }
+            LogCalInfo(logger, "CSV 表头: {Headers}", string.Join("|", headers));
+
+            int count = 0;
+            int skipped = 0;
+            int totalRows = records.Count - 1;
+            progress?.Invoke(0, totalRows, $"共发现 {totalRows} 行记录,开始创建...");
+
+            for (int i = 1; i < records.Count; i++)
+            {
+                var values = records[i];
+                if (values.Length == 1 && string.IsNullOrWhiteSpace(values[0]))
+                    continue; // 空行
+                if (values.Length < headers.Length)
+                {
+                    skipped++;
+                    LogCalWarn(logger, "第 {Row} 行列数 {Col} < 表头数 {Header}, 跳过", i + 1, values.Length, headers.Length);
+                    continue;
+                }
+
+                var dict = new Dictionary<string, string>();
+                for (int j = 0; j < headers.Length && j < values.Length; j++)
+                {
+                    dict[headers[j]] = values[j];
+                }
+
+                DateTime startTime = default(DateTime);
+                DateTime endTime = default(DateTime);
+                bool isAllDay = false;
+
+                // Outlook CSV 把日期/时间拆成两列 ("开始日期**" + "开始时间"),任一为空都视为异常
+                var allDayStr = GetDictValue(dict, "全天事件", "AllDay");
+                if (!string.IsNullOrWhiteSpace(allDayStr) &&
+                    (allDayStr.Trim().Equals("True", StringComparison.OrdinalIgnoreCase) ||
+                     allDayStr.Trim().Equals("1", StringComparison.OrdinalIgnoreCase) ||
+                     allDayStr.Trim().Equals("是", StringComparison.OrdinalIgnoreCase) ||
+                     allDayStr.Trim().Equals("yes", StringComparison.OrdinalIgnoreCase)))
+                {
+                    isAllDay = true;
+                }
+
+                if (isAllDay)
+                {
+                    // 全天事件: 用 开始日期 作为当天 0 点, 结束日期 23:59:59
+                    var startDateStr = GetDictValue(dict, "开始日期", "StartDate");
+                    var endDateStr = GetDictValue(dict, "结束日期", "EndDate");
+                    if (!DateTime.TryParse(startDateStr, out startTime) || !DateTime.TryParse(endDateStr, out endTime))
+                    {
+                        skipped++;
+                        LogCalWarn(logger, "第 {Row} 行全天事件日期解析失败: Start='{Start}', End='{End}', 跳过",
+                            i + 1, startDateStr, endDateStr);
+                        continue;
+                    }
+                    endTime = endTime.Date.AddDays(1).AddSeconds(-1); // 整天
+                }
+                else
+                {
+                    // 非全天: 拼 "开始日期**" + " 开始时间" 后解析
+                    var startDateStr = GetDictValue(dict, "开始日期", "StartDate");
+                    var endDateStr = GetDictValue(dict, "结束日期", "EndDate");
+                    var startTimeStr = GetDictValue(dict, "开始时间", "StartTime");
+                    var endTimeStr = GetDictValue(dict, "结束时间", "EndTime");
+
+                    if (string.IsNullOrWhiteSpace(startDateStr) || string.IsNullOrWhiteSpace(startTimeStr) ||
+                        string.IsNullOrWhiteSpace(endDateStr) || string.IsNullOrWhiteSpace(endTimeStr))
+                    {
+                        skipped++;
+                        LogCalWarn(logger, "第 {Row} 行缺少日期或时间列, 跳过", i + 1);
+                        continue;
+                    }
+
+                    // 拼成 "2026/5/1 12:00:00" 这样的字符串再解析
+                    var startCombined = $"{startDateStr} {startTimeStr}";
+                    var endCombined = $"{endDateStr} {endTimeStr}";
+                    if (!DateTime.TryParse(startCombined, out startTime) || !DateTime.TryParse(endCombined, out endTime))
+                    {
+                        skipped++;
+                        LogCalWarn(logger, "第 {Row} 行日期+时间解析失败: Start='{Start}', End='{End}', 跳过",
+                            i + 1, startCombined, endCombined);
+                        continue;
+                    }
+                }
+
+                var subject = GetDictValue(dict, "主题", "Subject");
+                var body = GetDictValue(dict, "说明", "Description");
+                var location = GetDictValue(dict, "地点", "Location");
+
+                // CSV 导出的时间就是 wall-clock(导出机器的本地时区),不做时区转换。
+                // 直接以 Kind=Unspecified 传给 EWS,EWS 会按"邮箱时区的 wall-clock"存储,
+                // 这样无论用户的 O365 邮箱时区设成什么,日历显示的时间都和 CSV 里写的一模一样。
+                // (如果做 UTC 转换,O365 显示会受邮箱时区设置影响,经常出现 8 小时偏移。)
+                var startWall = DateTime.SpecifyKind(startTime, DateTimeKind.Unspecified);
+                var endWall = DateTime.SpecifyKind(endTime, DateTimeKind.Unspecified);
+
+                if (_office365Service.CreateCalendarEvent(subject, startWall, endWall, body, location))
+                {
+                    count++;
+                    LogCalInfo(logger, "第 {Row} 行事件创建成功: {Subject} ({Start:yyyy-MM-dd HH:mm:ss} -> {End:yyyy-MM-dd HH:mm:ss})",
+                        i + 1, subject, startWall, endWall);
+                }
+                else
+                {
+                    skipped++;
+                    LogCalWarn(logger, "第 {Row} 行事件创建失败: {Subject}", i + 1, subject);
+                }
+
+                // 实时进度:每处理一行都回调一次
+                var subjectShort = (subject ?? "").Length > 20 ? subject.Substring(0, 20) + "..." : (subject ?? "");
+                progress?.Invoke(i, totalRows, $"正在创建 {i}/{totalRows} - {subjectShort} (成功 {count}, 跳过 {skipped})");
+            }
+
+            LogCalInfo(logger, "=== CSV 同步完成 === 总记录数: {Total}, 成功: {Count}, 跳过: {Skipped}",
+                records.Count - 1, count, skipped);
+            // 记录创建时使用的是 wall-clock (EWS 会按邮箱时区存),不再打印 UTC 时间避免误导
+            return skipped > 0
+                ? $"同步完成，共 {count} 个日历事件(跳过 {skipped} 条无效记录)"
+                : $"同步完成，共 {count} 个日历事件";
+        }
+
+        /// <summary>
+        /// 把从 CSV/ICS/VCS 解析出的时间按所选源时区转 UTC,确保 Graph API 创建的事件时间正确
+        /// 规则:
+        ///   - 已经是 UTC 的(Kind=Utc)直接用
+        ///   - Kind=Unspecified 的视为源时区的本地时间,转 UTC
+        ///   - Kind=Local 的,用源时区把 wall-clock 重新解释再转 UTC
+        /// </summary>
+        private (DateTime startUtc, DateTime endUtc) NormalizeEventTimes(DateTime start, DateTime end, TimeZoneInfo sourceTimeZone)
+        {
+            sourceTimeZone = sourceTimeZone ?? TimeZoneInfo.CreateCustomTimeZone("UTC+8", TimeSpan.FromHours(8), "UTC+8", "UTC+8");
+            DateTime startUtc, endUtc;
+
+            if (start.Kind == DateTimeKind.Utc)
+            {
+                startUtc = start;
+            }
+            else
+            {
+                var wallStart = DateTime.SpecifyKind(start, DateTimeKind.Unspecified);
+                startUtc = TimeZoneInfo.ConvertTimeToUtc(wallStart, sourceTimeZone);
+            }
+
+            if (end.Kind == DateTimeKind.Utc)
+            {
+                endUtc = end;
+            }
+            else
+            {
+                var wallEnd = DateTime.SpecifyKind(end, DateTimeKind.Unspecified);
+                endUtc = TimeZoneInfo.ConvertTimeToUtc(wallEnd, sourceTimeZone);
+            }
+
+            return (startUtc, endUtc);
+        }
+
+        /// <summary>
+        /// 从 ICS 参数式行里提取第一个冒号之后的 value。
+        /// 例如 "SUMMARY;LANGUAGE=zh-CN:午餐" → "午餐"
+        /// 或   "DESCRIPTION:文本" → "文本"
+        /// 注意:RFC 5545 里第一个冒号之前是"参数段",第一个冒号之后是"value"。
+        /// </summary>
+        private static string ExtractIcsValueAfterColon(string line, string propertyName)
+        {
+            var colonIdx = line.IndexOf(':');
+            if (colonIdx < 0) return "";
+            return line.Substring(colonIdx + 1);
+        }
+
+        /// <summary>
+        /// 解析 ICS 日期时间值,支持以下 Outlook 格式:
+        ///   - 20240115T100000Z       (UTC)
+        ///   - 20240115T100000        (floating / local)
+        ///   - 20240115               (全天事件,VALUE=DATE)
+        /// value: "DTSTART" 或 "DTEND" 后面的实际时间字符串
+        /// tzId: 来自 "TZID=xxx" 参数(可选,空时用 sourceTimeZone)
+        /// isAllDay: 来自 "VALUE=DATE" 参数
+        /// 关键:返回值统一为 Kind=Unspecified 的 wall-clock,直接交给 Graph(配合 timeZone 字段)显示。
+        /// 不要在这里转 UTC,否则 SyncCalendarFromIcs 用 SpecifyKind(Utc, Unspecified) 拿到的还是 UTC 时刻,
+        /// 再送进 Graph 就会叠加 8 小时偏移。
+        /// </summary>
+        private static void TryParseIcsDateTime(string value, string tzId, TimeZoneInfo sourceTimeZone, bool isAllDay, out DateTime result)
+        {
+            result = DateTime.MinValue;
+            value = value?.Trim();
+            if (string.IsNullOrEmpty(value)) return;
+
+            // 全天事件: 形如 20240604 (8 位数字,无 T)
+            if (isAllDay || (value.Length == 8 && long.TryParse(value, out _)))
+            {
+                if (DateTime.TryParseExact(value, "yyyyMMdd",
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.None, out var allDay))
+                {
+                    // 全天事件返回当天 00:00:00 wall-clock,O365 会按整天处理
+                    result = DateTime.SpecifyKind(allDay, DateTimeKind.Unspecified);
+                }
+                return;
+            }
+
+            // 解析时区 (优先用 ICS 文件里声明的 TZID,失败再回落到 sourceTimeZone)
+            var effectiveTz = ResolveTimeZone(tzId) ?? sourceTimeZone
+                ?? TimeZoneInfo.CreateCustomTimeZone("UTC+8", TimeSpan.FromHours(8), "UTC+8", "UTC+8");
+
+            // 形如 20240115T100000Z (UTC 时刻,需要先转成 effectiveTz 的 wall-clock 再作为 Unspecified 返回)
+            if (value.EndsWith("Z", StringComparison.OrdinalIgnoreCase))
+            {
+                if (DateTime.TryParseExact(value, "yyyyMMddTHHmmssZ",
+                        System.Globalization.CultureInfo.InvariantCulture,
+                        System.Globalization.DateTimeStyles.AssumeUniversal, out var dtUtc))
+                {
+                    // 拿到 UTC 时刻后,转成 effectiveTz 的本地时间,再作为 Unspecified 返回
+                    var dtUtcKind = DateTime.SpecifyKind(dtUtc, DateTimeKind.Utc);
+                    var wallInTz = TimeZoneInfo.ConvertTimeFromUtc(dtUtcKind, effectiveTz);
+                    result = DateTime.SpecifyKind(wallInTz, DateTimeKind.Unspecified);
+                }
+                return;
+            }
+
+            // 形如 20240115T100000 (按 effectiveTz 解释的本地时间,直接当 wall-clock 返回)
+            if (DateTime.TryParseExact(value, "yyyyMMddTHHmmss",
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.None, out var local))
+            {
+                // 不做 UTC 转换,直接返回 wall-clock 作为 Kind=Unspecified
+                result = DateTime.SpecifyKind(local, DateTimeKind.Unspecified);
+            }
+        }
+
+        /// <summary>
+        /// 解析 ICS 日期行,提取时间值、TZID 参数、是否全天事件
+        /// 支持:
+        ///   DTSTART:20240115T100000Z
+        ///   DTSTART;TZID="China Standard Time":20240115T100000
+        ///   DTSTART;VALUE=DATE:20240115
+        ///   DTSTART;TZID="Pacific Standard Time";VALUE=DATE:20240115
+        /// </summary>
+        private static (string value, string tzId, bool isAllDay) SplitIcsDateLine(string line, string propertyName)
+        {
+            // 去掉行尾的 CRLF 已由 Split 处理过,这里不再处理
+            // 先按第一个冒号切出"参数段"和"值段"
+            var colonIdx = line.IndexOf(':');
+            if (colonIdx < 0) return (null, null, false);
+
+            var head = line.Substring(0, colonIdx);   // 如 "DTSTART;TZID=\"China Standard Time\";VALUE=DATE"
+            var value = line.Substring(colonIdx + 1); // 如 "20240115T100000"
+
+            // 解析参数
+            string tzId = null;
+            bool isAllDay = false;
+            var parts = head.Split(';');
+            foreach (var part in parts)
+            {
+                if (string.IsNullOrEmpty(part)) continue;
+                var eq = part.IndexOf('=');
+                if (eq < 0) continue;
+                var key = part.Substring(0, eq).Trim().ToUpperInvariant();
+                var val = part.Substring(eq + 1).Trim().Trim('"');
+                if (key == "TZID") tzId = val;
+                else if (key == "VALUE" && val.Equals("DATE", StringComparison.OrdinalIgnoreCase)) isAllDay = true;
+            }
+            return (value, tzId, isAllDay);
+        }
+
+        private static System.Collections.Generic.Dictionary<string, TimeZoneInfo> _tzCache
+            = new System.Collections.Generic.Dictionary<string, TimeZoneInfo>(StringComparer.OrdinalIgnoreCase);
+
+        /// <summary>
+        /// 按 TZID 名称解析时区
+        /// 支持:
+        ///   - Windows 时区 ID (如 "China Standard Time", "Pacific Standard Time")
+        ///   - IANA 时区 ID (如 "Asia/Shanghai", "America/Los_Angeles")
+        ///   - 自定义 UTC 偏移 (如 "UTC+8" → TimeSpan 8 小时)
+        /// 找不到时返回 null
+        /// </summary>
+        private static TimeZoneInfo ResolveTimeZone(string tzId)
+        {
+            if (string.IsNullOrWhiteSpace(tzId)) return null;
+            if (_tzCache.TryGetValue(tzId, out var cached)) return cached;
+
+            TimeZoneInfo result = null;
+
+            // 1. 系统注册表里的 Windows/IANA 时区
+            try { result = TimeZoneInfo.FindSystemTimeZoneById(tzId); }
+            catch { /* 找不到 */ }
+
+            // 2. IANA 时区 (Linux/macOS 上 find 可能成功;Windows 上靠下面 tzutil/ICU 桥接)
+            if (result == null)
+            {
+                try
+                {
+                    // 尝试把 IANA ID 通过 TimeZoneInfo.CreateTimeZoneList 的转换桥查找
+                    // .NET 在 Windows 上 FindSystemTimeZoneById 已经能识别多数 IANA
+                    result = TimeZoneInfo.FindSystemTimeZoneById(tzId);
+                }
+                catch { }
+            }
+
+            // 3. UTC 偏移字符串 (如 "UTC+8", "UTC-5", "UTC")
+            if (result == null && tzId.StartsWith("UTC", StringComparison.OrdinalIgnoreCase))
+            {
+                int offset = 0;
+                if (tzId.Equals("UTC", StringComparison.OrdinalIgnoreCase)) offset = 0;
+                else if (int.TryParse(tzId.Substring(3), out offset))
+                {
+                    result = TimeZoneInfo.CreateCustomTimeZone(tzId, TimeSpan.FromHours(offset), tzId, tzId);
+                }
+            }
+
+            _tzCache[tzId] = result; // 即使 null 也缓存,避免每次重复查找
+            return result;
+        }
+
+        /// <summary>
+        /// 展开 ICS 续行 (RFC 5545 §3.1):
+        /// 任何以 SP(空格)或 HT(Tab)开头的行,都是上一行的延续,需要合并
+        /// </summary>
+        private static string[] UnfoldIcsLines(string[] rawLines)
+        {
+            var result = new System.Collections.Generic.List<string>(rawLines.Length);
+            var current = new System.Text.StringBuilder();
+            foreach (var raw in rawLines)
+            {
+                if (string.IsNullOrEmpty(raw))
+                {
+                    if (current.Length > 0)
+                    {
+                        result.Add(current.ToString());
+                        current.Clear();
+                    }
+                    result.Add("");
+                    continue;
+                }
+                if ((raw[0] == ' ' || raw[0] == '\t') && current.Length > 0)
+                {
+                    // 续行: 去掉前导的 1 个空白字符后追加
+                    current.Append(raw.Substring(1));
+                }
+                else
+                {
+                    if (current.Length > 0)
+                    {
+                        result.Add(current.ToString());
+                    }
+                    current.Clear();
+                    current.Append(raw);
+                }
+            }
+            if (current.Length > 0) result.Add(current.ToString());
+            return result.ToArray();
         }
 
 
@@ -19159,10 +20008,10 @@ namespace MailConverter
                     Serilog.Log.Information("已断开Exchange Online Session");
                 }
 
-                // 切换到Exchange Online 百宝箱时，刷新OAuth账户列表
+                // 切换到 Exchange Online 百宝箱时，刷新所有账户列表（OAuth、CardDAV 等）
                 if (tabText == "Exchange Online 百宝箱")
                 {
-                    LoadSavedOAuthAccounts();
+                    RefreshAllAccountLists();
                 }
             }
         }
@@ -21092,6 +21941,17 @@ namespace MailConverter
             return settings.OAuthAccounts;
         }
 
+        /// <summary>
+        /// 统一刷新所有账户下拉框：OAuth、CardDAV 等
+        /// 在首选项对话框关闭、Tab 切换等时机调用，确保磁盘最新数据立即可见
+        /// </summary>
+        public void RefreshAllAccountLists()
+        {
+            try { LoadSavedOAuthAccounts(); } catch { /* cmbO365SavedAccounts 可能尚未创建 */ }
+            try { _syncContactsControl?.ReloadAllAccounts(); } catch { }
+            try { _syncCalendarControl?.ReloadAllAccounts(); } catch { }
+        }
+
         private void CmbO365SavedAccounts_SelectedIndexChanged(object sender, EventArgs e)
         {
             // 使用sender而不是类字段来判断是哪个下拉框触发了事件
@@ -21970,6 +22830,7 @@ $results | Out-String
                 ConfigService.SaveOAuthAccount(account);
                 settings = ConfigService.LoadAll();
                 RefreshOAuthList();
+                RefreshAllAccountLists();
                 MessageBox.Show("保存成功", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             };
             btnOAuthDelete.Click += (s, ev) =>
@@ -21980,6 +22841,7 @@ $results | Out-String
                     ConfigService.DeleteOAuthAccount(lstOAuth.SelectedItem.ToString());
                     settings = ConfigService.LoadAll();
                     RefreshOAuthList();
+                    RefreshAllAccountLists();
                     txtOAuthName.Clear(); txtClientId.Clear(); txtTenantId.Clear(); txtOAuthEmail.Clear();
                 }
             };
@@ -22023,6 +22885,7 @@ $results | Out-String
                 SettingsService.AddOrUpdateImapAccount(txtImapName.Text.Trim(), txtImapHost.Text.Trim(), 993, true, txtImapEmail.Text.Trim(), txtImapPassword.Text);
                 settings = SettingsService.Load();
                 RefreshImapList();
+                RefreshAllAccountLists();
                 MessageBox.Show("保存成功", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             };
             btnImapDelete.Click += (s, ev) =>
@@ -22033,6 +22896,7 @@ $results | Out-String
                     SettingsService.RemoveImapAccount(lstImap.SelectedItem.ToString());
                     settings = SettingsService.Load();
                     RefreshImapList();
+                    RefreshAllAccountLists();
                     txtImapName.Clear(); txtImapHost.Clear(); txtImapEmail.Clear(); txtImapPassword.Clear();
                 }
             };
@@ -22079,6 +22943,7 @@ $results | Out-String
                     SettingsService.RemoveCardDavAccount(lstCardDav.SelectedItem.ToString());
                     settings = SettingsService.Load();
                     RefreshCardDavList();
+                    RefreshAllAccountLists();
                     pnlCardDavEdit.Visible = false;
                 }
             };
@@ -22105,6 +22970,7 @@ $results | Out-String
                 SettingsService.AddOrUpdateCardDavAccount(txtCardDavName.Text.Trim(), cmbCardDavProvider.SelectedItem?.ToString() ?? "", txtCardDavServerUrl.Text.Trim());
                 settings = SettingsService.Load();
                 RefreshCardDavList();
+                RefreshAllAccountLists();
                 pnlCardDavEdit.Visible = false;
                 MessageBox.Show("保存成功", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             };
@@ -22145,6 +23011,7 @@ $results | Out-String
                 {
                     SettingsService.RemovePstAccount(lstPstAccounts.SelectedItem.ToString());
                     RefreshPstAccountsList();
+                    RefreshAllAccountLists();
                     txtPstName.Clear(); txtPstTenantId.Clear(); txtPstClientId.Clear(); txtPstClientSecret.Clear();
                 }
             };
@@ -22158,6 +23025,7 @@ $results | Out-String
                 else settings.PstAccounts.Add(account);
                 ConfigService.SaveAll(settings);
                 RefreshPstAccountsList();
+                RefreshAllAccountLists();
                 MessageBox.Show("设置已保存", "提示", MessageBoxButtons.OK, MessageBoxIcon.Information);
             };
 

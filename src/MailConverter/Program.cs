@@ -20,6 +20,9 @@ namespace MailConverter
         public static string PurviewLogDirectory => Path.Combine(LogDirectory, "Purview");
         public static string BatchToO365LogDirectory => Path.Combine(LogDirectory, "batchToO365");
         public static string RegistrationLogDirectory => Path.Combine(LogDirectory, "Registration");
+        public static string SyncCalendarLogDirectory => Path.Combine(LogDirectory, "syncCalandar");
+        // 日历 ICS 导入专用日志(只放 ICS 同步,VCS/CSV 仍走 syncCalandar/)
+        public static string O365SingleSyncIcsLogDirectory => Path.Combine(LogDirectory, "o365single", "SYNCICS");
 
         /// <summary>
         /// 获取Python可执行文件路径（仅使用嵌入式Python）
@@ -68,6 +71,8 @@ namespace MailConverter
             Directory.CreateDirectory(GroupManagementLogDirectory);
             Directory.CreateDirectory(PurviewLogDirectory);
             Directory.CreateDirectory(BatchToO365LogDirectory);
+            Directory.CreateDirectory(SyncCalendarLogDirectory);
+            Directory.CreateDirectory(O365SingleSyncIcsLogDirectory);
             Directory.CreateDirectory(RegistrationLogDirectory);
 
             // 在WinForms初始化之前设置DPI感知（关键！必须最早调用）
@@ -393,6 +398,45 @@ namespace MailConverter
                 }
                 return _registrationLogger;
             }
+        }
+
+        /// <summary>
+        /// 日历同步日志记录器(每次同步生成新文件 calandarSync_yyyyMMdd_HHmmss.log)
+        /// 日志目录: Logs/syncCalandar/
+        /// </summary>
+        public static ILogger CalendarSyncLogger(string sessionId = null)
+        {
+            Directory.CreateDirectory(SyncCalendarLogDirectory);
+            var stamp = string.IsNullOrEmpty(sessionId)
+                ? DateTime.Now.ToString("yyyyMMdd_HHmmss")
+                : sessionId;
+            return new LoggerConfiguration()
+                .MinimumLevel.Information()
+                .WriteTo.File(
+                    Path.Combine(SyncCalendarLogDirectory, $"calandarSync_{stamp}.log"),
+                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception}",
+                    shared: true)
+                .CreateLogger();
+        }
+
+        /// <summary>
+        /// 日历 ICS 导入专用日志记录器(每次同步生成新文件 icsSync_yyyyMMdd_HHmmss.log)
+        /// 日志目录: Logs/o365single/SYNCICS/
+        /// 仅用于 ICS 同步(CSV/VCS 仍走 CalendarSyncLogger → Logs/syncCalandar/)
+        /// </summary>
+        public static ILogger CalendarIcsSyncLogger(string sessionId = null)
+        {
+            Directory.CreateDirectory(O365SingleSyncIcsLogDirectory);
+            var stamp = string.IsNullOrEmpty(sessionId)
+                ? DateTime.Now.ToString("yyyyMMdd_HHmmss")
+                : sessionId;
+            return new LoggerConfiguration()
+                .MinimumLevel.Information()
+                .WriteTo.File(
+                    Path.Combine(O365SingleSyncIcsLogDirectory, $"icsSync_{stamp}.log"),
+                    outputTemplate: "{Timestamp:yyyy-MM-dd HH:mm:ss.fff} [{Level:u3}] {Message:lj}{NewLine}{Exception}",
+                    shared: true)
+                .CreateLogger();
         }
     }
 }

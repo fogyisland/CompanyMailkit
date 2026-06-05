@@ -42,12 +42,23 @@ namespace MailConverter
         public static List<OAuthAccount> LoadOAuthAccounts()
         {
             var accounts = new List<OAuthAccount>();
+            Serilog.Log.Information("LoadOAuthAccounts 开始, OAuthDir={Dir}, exists={Exists}", OAuthDir, Directory.Exists(OAuthDir));
             if (!Directory.Exists(OAuthDir)) return accounts;
 
             foreach (var file in Directory.GetFiles(OAuthDir, "*.inf"))
             {
+                Serilog.Log.Information("读取OAuth文件: {File}", file);
                 var dict = LoadInfDict(file);
-                if (dict == null || !dict.ContainsKey("Name")) continue;
+                if (dict == null)
+                {
+                    Serilog.Log.Warning("dict 为空, file={File}", file);
+                    continue;
+                }
+                if (!dict.ContainsKey("Name"))
+                {
+                    Serilog.Log.Warning("dict不包含Name, file={File}, keys={Keys}", file, string.Join(",", dict.Keys));
+                    continue;
+                }
 
                 var account = new OAuthAccount
                 {
@@ -56,8 +67,11 @@ namespace MailConverter
                     TenantId = dict.ContainsKey("TenantId") ? dict["TenantId"] : "",
                     Email = dict.ContainsKey("Email") ? dict["Email"] : ""
                 };
+                Serilog.Log.Information("加载OAuth账户: {Name}, ClientId={ClientId}, TenantId={TenantId}, Email={Email}",
+                    account.Name, account.ClientId, account.TenantId, account.Email);
                 accounts.Add(account);
             }
+            Serilog.Log.Information("LoadOAuthAccounts 完成, 共 {Count} 个账户", accounts.Count);
             return accounts;
         }
 

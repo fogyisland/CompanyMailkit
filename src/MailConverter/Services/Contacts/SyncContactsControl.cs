@@ -24,17 +24,21 @@ namespace MailConverter.Services.Contacts
         private TextBox txtPassword;
         private TextBox txtSourceFile;
         private Button btnBrowse;
+        private Button btnDownloadTemplate;
         private Button btnSelectContacts;
         private Button btnIncrementalSync;
         private Button btnStartSync;
         private ProgressBar progressSync;
         private Label lblSyncStatus;
+        private Label lblProgressPercent;
         private Label lblCardDavAccount;
         private Label lblServerUrl;
         private Label lblUsername;
         private Label lblPassword;
         private Label lblSourceFile;
+        private Label lblCardDavProviderList;
         private ComboBox cmbSyncAccounts;
+        private TableLayoutPanel tblSource;
 
         private List<string> _selectedContactUrls = new List<string>();
 
@@ -60,7 +64,7 @@ namespace MailConverter.Services.Contacts
                 RowCount = 3,
                 Padding = new Padding(15),
                 RowStyles = {
-                    new RowStyle(SizeType.Absolute, 145),  // 账户配置
+                    new RowStyle(SizeType.Absolute, 180),  // 账户配置 (4 行)
                     new RowStyle(SizeType.Percent, 100),   // 同步源配置
                     new RowStyle(SizeType.Absolute, 100)   // 操作区
                 }
@@ -78,12 +82,13 @@ namespace MailConverter.Services.Contacts
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 4,
-                RowCount = 3,
+                RowCount = 4,
                 Padding = new Padding(5),
                 RowStyles = {
-                    new RowStyle(SizeType.Absolute, 30),
-                    new RowStyle(SizeType.Absolute, 30),
-                    new RowStyle(SizeType.Absolute, 36)
+                    new RowStyle(SizeType.Absolute, 30),  // Row 0: 已保存账户
+                    new RowStyle(SizeType.Absolute, 30),  // Row 1: Client ID + 租户ID
+                    new RowStyle(SizeType.Absolute, 30),  // Row 2: 邮箱
+                    new RowStyle(SizeType.Absolute, 40)   // Row 3: 登录按钮 (独占一行)
                 },
                 ColumnStyles = {
                     new ColumnStyle(SizeType.AutoSize),
@@ -111,9 +116,9 @@ namespace MailConverter.Services.Contacts
 
             btnOAuthLogin = new Button
             {
-                Text = "▶ 使用 Microsoft 登录",
-                AutoSize = true,
-                Padding = new Padding(10, 5, 10, 5),
+                Text = "▶ Microsoft 登录",
+                AutoSize = false,
+                Size = new Size(160, 32),
                 BackColor = Color.FromArgb(0, 120, 215),
                 ForeColor = Color.White,
                 FlatStyle = FlatStyle.Flat,
@@ -141,11 +146,15 @@ namespace MailConverter.Services.Contacts
             tblAccount.Controls.Add(lblTenantId, 2, 1);
             tblAccount.Controls.Add(txtTenantId, 3, 1);
 
-            // Row 2: 邮箱 + 登录按钮
+            // Row 2: 邮箱 (跨 3 列)
             tblAccount.Controls.Add(lblEmail, 0, 2);
+            tblAccount.SetColumnSpan(txtEmail, 3);
             tblAccount.Controls.Add(txtEmail, 1, 2);
-            tblAccount.Controls.Add(btnOAuthLogin, 2, 2);
-            tblAccount.SetColumnSpan(btnOAuthLogin, 2);
+
+            // Row 3: 登录按钮 (右对齐,独占一行)
+            tblAccount.Controls.Add(btnOAuthLogin, 3, 3);
+            btnOAuthLogin.Anchor = AnchorStyles.Right | AnchorStyles.Top;
+            btnOAuthLogin.Dock = DockStyle.None;
 
             grpAccount.Controls.Add(tblAccount);
 
@@ -157,10 +166,10 @@ namespace MailConverter.Services.Contacts
                 Padding = new Padding(10)
             };
 
-            var tblSource = new TableLayoutPanel
+            tblSource = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
-                ColumnCount = 4,
+                ColumnCount = 6,
                 RowCount = 5,
                 Padding = new Padding(5),
                 RowStyles = {
@@ -171,10 +180,12 @@ namespace MailConverter.Services.Contacts
                     new RowStyle(SizeType.Absolute, 40)   // Row 4: CardDAV 按钮
                 },
                 ColumnStyles = {
-                    new ColumnStyle(SizeType.AutoSize),
-                    new ColumnStyle(SizeType.Percent, 40),
-                    new ColumnStyle(SizeType.AutoSize),
-                    new ColumnStyle(SizeType.Percent, 60)
+                    new ColumnStyle(SizeType.AutoSize),     // 0: 标签
+                    new ColumnStyle(SizeType.Percent, 25),  // 1: 文本框左侧
+                    new ColumnStyle(SizeType.AutoSize),     // 2: 文本框右侧 / 提示
+                    new ColumnStyle(SizeType.AutoSize),     // 3: 下载模板按钮
+                    new ColumnStyle(SizeType.Percent, 35),  // 4: 文本框 / 浏览按钮
+                    new ColumnStyle(SizeType.Percent, 30)   // 5: CardDAV 提供商列表(右侧)
                 }
             };
 
@@ -200,6 +211,21 @@ namespace MailConverter.Services.Contacts
             };
             btnBrowse.Click += BtnBrowse_Click;
 
+            // 下载模板按钮 (本地文件模式可见)
+            btnDownloadTemplate = new Button
+            {
+                Text = "下载模板",
+                Width = 80,
+                BackColor = Color.FromArgb(245, 245, 245),
+                FlatStyle = FlatStyle.Flat,
+                Visible = false
+            };
+            var templateMenu = new ContextMenuStrip();
+            templateMenu.Items.Add("下载 CSV 模板", null, (s, e) => DownloadTemplate("csv"));
+            templateMenu.Items.Add("下载 VCF 模板", null, (s, e) => DownloadTemplate("vcf"));
+            btnDownloadTemplate.ContextMenuStrip = templateMenu;
+            btnDownloadTemplate.Click += (s, e) => templateMenu.Show(btnDownloadTemplate, 0, btnDownloadTemplate.Height);
+
             // CardDAV / 企业微信相关控件
             lblCardDavAccount = new Label { Text = "提供商:", AutoSize = true, Visible = false };
             cmbCardDavAccounts = new ComboBox
@@ -214,6 +240,27 @@ namespace MailConverter.Services.Contacts
                 Text = "(QQ邮箱需使用授权码)",
                 AutoSize = true,
                 ForeColor = Color.Red,
+                Visible = false
+            };
+
+            // 右侧 CardDAV 提供商参考列表(只读,带表情)
+            lblCardDavProviderList = new Label
+            {
+                Text = "常见 CardDAV 服务器:\r\n" +
+                       "🍎 iCloud\r\n" +
+                       "📧 Gmail (已停用)\r\n" +
+                       "🐧 QQ邮箱 (授权码)\r\n" +
+                       "📮 Outlook / Microsoft 365\r\n" +
+                       "📨 Yahoo\r\n" +
+                       "💬 飞书",
+                AutoSize = false,
+                Dock = DockStyle.Fill,
+                TextAlign = ContentAlignment.TopLeft,
+                ForeColor = Color.DarkSlateGray,
+                BackColor = Color.FromArgb(245, 248, 250),
+                BorderStyle = BorderStyle.FixedSingle,
+                Padding = new Padding(6, 4, 6, 4),
+                Font = new Font("Segoe UI Emoji", 8F),
                 Visible = false
             };
 
@@ -255,6 +302,10 @@ namespace MailConverter.Services.Contacts
             tblSource.SetColumnSpan(cmbSourceType, 3);
             tblSource.Controls.Add(cmbSourceType, 1, 0);
 
+            // 右侧:CardDAV 提供商参考列表(只读,跨 5 行,只占 Column 5)
+            tblSource.Controls.Add(lblCardDavProviderList, 5, 0);
+            tblSource.SetRowSpan(lblCardDavProviderList, 5);
+
             // Row 1: CardDAV 提供商 + 提示 (only CardDAV) + 本地文件 (only 本地文件) 互相隐藏
             tblSource.Controls.Add(lblCardDavAccount, 0, 1);
             tblSource.Controls.Add(cmbCardDavAccounts, 1, 1);
@@ -264,7 +315,8 @@ namespace MailConverter.Services.Contacts
             tblSource.Controls.Add(lblSourceFile, 0, 1);
             tblSource.Controls.Add(txtSourceFile, 1, 1);
             tblSource.SetColumnSpan(txtSourceFile, 2);
-            tblSource.Controls.Add(btnBrowse, 3, 1);
+            tblSource.Controls.Add(btnDownloadTemplate, 3, 1);
+            tblSource.Controls.Add(btnBrowse, 4, 1);
 
             // Row 2: 服务器 (only CardDAV/WeChat)
             tblSource.Controls.Add(lblServerUrl, 0, 2);
@@ -298,8 +350,8 @@ namespace MailConverter.Services.Contacts
                 RowCount = 2,
                 Padding = new Padding(5),
                 RowStyles = {
-                    new RowStyle(SizeType.Absolute, 36),
-                    new RowStyle(SizeType.Absolute, 24)
+                    new RowStyle(SizeType.Absolute, 36),  // Row 0: 按钮 + 进度条 + 百分比
+                    new RowStyle(SizeType.Absolute, 24)   // Row 1: 状态
                 },
                 ColumnStyles = {
                     new ColumnStyle(SizeType.AutoSize),
@@ -333,7 +385,7 @@ namespace MailConverter.Services.Contacts
                 ForeColor = Color.Gray
             };
 
-            var lblProgressPercent = new Label
+            lblProgressPercent = new Label
             {
                 Text = "0%",
                 AutoSize = true,
@@ -358,6 +410,9 @@ namespace MailConverter.Services.Contacts
 
             this.Controls.Add(mainLayout);
             this.Controls.Add(lblCurrentEmail);  // 隐藏占位,供事件处理器引用
+
+            // 初始化同步源配置区的可见性 (事件绑定在 SelectedIndex=0 之后,需手动调用)
+            UpdateControlsVisibility(cmbSourceType.SelectedIndex);
         }
 
         /// <summary>
@@ -368,6 +423,39 @@ namespace MailConverter.Services.Contacts
             if (cmbSyncAccounts != null && MainForm != null)
             {
                 MainForm.LoadSavedOAuthAccountsToComboBox(cmbSyncAccounts);
+            }
+        }
+
+        /// <summary>
+        /// 重新加载所有账户列表（OAuth + CardDAV），从磁盘读取最新数据
+        /// </summary>
+        public void ReloadAllAccounts()
+        {
+            LoadAccounts();
+            ReloadCardDavAccounts();
+        }
+
+        public void ReloadCardDavAccounts()
+        {
+            if (cmbCardDavAccounts == null) return;
+            var cardDavAccounts = SettingsService.Load().CardDavAccounts;
+            var previousSelection = cmbCardDavAccounts.SelectedItem?.ToString();
+            cmbCardDavAccounts.Items.Clear();
+            foreach (var acc in cardDavAccounts)
+            {
+                cmbCardDavAccounts.Items.Add(acc.Name);
+            }
+            if (cmbCardDavAccounts.Items.Count == 0) return;
+
+            int idx = string.IsNullOrEmpty(previousSelection)
+                ? 0
+                : cmbCardDavAccounts.Items.IndexOf(previousSelection);
+            cmbCardDavAccounts.SelectedIndex = idx >= 0 ? idx : 0;
+
+            var selected = cardDavAccounts.Find(a => a.Name == cmbCardDavAccounts.SelectedItem?.ToString());
+            if (selected != null && txtServerUrl != null)
+            {
+                txtServerUrl.Text = selected.ServerUrl;
             }
         }
 
@@ -394,10 +482,11 @@ namespace MailConverter.Services.Contacts
         {
             if (sourceType == 0 || sourceType == 1)
             {
-                // 本地文件
+                // 本地文件 - 隐藏 CardDAV/WeChat 字段并折叠其行
                 lblCardDavAccount.Visible = false;
                 cmbCardDavAccounts.Visible = false;
                 lblCardDavTip.Visible = false;
+                lblCardDavProviderList.Visible = false;
                 lblServerUrl.Visible = false;
                 txtServerUrl.Visible = false;
                 lblUsername.Visible = false;
@@ -407,8 +496,10 @@ namespace MailConverter.Services.Contacts
                 lblSourceFile.Visible = true;
                 txtSourceFile.Visible = true;
                 btnBrowse.Visible = true;
+                btnDownloadTemplate.Visible = true;
                 btnSelectContacts.Visible = false;
                 btnIncrementalSync.Visible = false;
+                CollapseRows(localFileMode: true);
             }
             else if (sourceType == 2)
             {
@@ -427,6 +518,7 @@ namespace MailConverter.Services.Contacts
                 lblCardDavAccount.Visible = true;
                 cmbCardDavAccounts.Visible = true;
                 lblCardDavTip.Visible = true;
+                lblCardDavProviderList.Visible = true;
                 lblServerUrl.Visible = true;
                 txtServerUrl.Visible = true;
                 lblUsername.Visible = true;
@@ -438,6 +530,8 @@ namespace MailConverter.Services.Contacts
                 lblSourceFile.Visible = false;
                 txtSourceFile.Visible = false;
                 btnBrowse.Visible = false;
+                btnDownloadTemplate.Visible = false;
+                CollapseRows(localFileMode: false, showCardDavButtons: true);
             }
             else
             {
@@ -445,6 +539,7 @@ namespace MailConverter.Services.Contacts
                 lblCardDavAccount.Visible = false;
                 cmbCardDavAccounts.Visible = false;
                 lblCardDavTip.Visible = false;
+                lblCardDavProviderList.Visible = false;
                 lblServerUrl.Visible = true;
                 txtServerUrl.Visible = true;
                 lblUsername.Visible = true;
@@ -456,7 +551,23 @@ namespace MailConverter.Services.Contacts
                 lblSourceFile.Visible = false;
                 txtSourceFile.Visible = false;
                 btnBrowse.Visible = false;
+                btnDownloadTemplate.Visible = false;
+                CollapseRows(localFileMode: false, showCardDavButtons: false);
             }
+        }
+
+        /// <summary>
+        /// 折叠/展开 tblSource 的服务器行(2)、凭据行(3)、CardDAV 按钮行(4)
+        /// </summary>
+        private void CollapseRows(bool localFileMode, bool showCardDavButtons = false)
+        {
+            if (tblSource == null || tblSource.RowStyles.Count < 5) return;
+            // Row 2: 服务器 (30px)
+            tblSource.RowStyles[2].Height = localFileMode ? 0 : 30;
+            // Row 3: 用户名 + 密码 (36px)
+            tblSource.RowStyles[3].Height = localFileMode ? 0 : 36;
+            // Row 4: CardDAV 按钮 (40px) - 仅 CardDAV 模式显示
+            tblSource.RowStyles[4].Height = (!localFileMode && showCardDavButtons) ? 40 : 0;
         }
 
         // === 事件处理 ===
@@ -559,6 +670,81 @@ namespace MailConverter.Services.Contacts
             }
         }
 
+        private void DownloadTemplate(string format)
+        {
+            using (var saveFileDialog = new SaveFileDialog())
+            {
+                saveFileDialog.Title = "保存导入模板";
+                if (format == "csv")
+                {
+                    saveFileDialog.Filter = "CSV文件|*.csv";
+                    saveFileDialog.FileName = "contacts_template.csv";
+                }
+                else
+                {
+                    saveFileDialog.Filter = "VCF文件|*.vcf";
+                    saveFileDialog.FileName = "contacts_template.vcf";
+                }
+
+                if (saveFileDialog.ShowDialog() != DialogResult.OK) return;
+
+                try
+                {
+                    string content = format == "csv" ? GetCsvTemplate() : GetVcfTemplate();
+
+                    // UTF-8 with BOM 保证 Excel 可正确识别中文表头
+                    var encoding = new System.Text.UTF8Encoding(true);
+                    File.WriteAllText(saveFileDialog.FileName, content, encoding);
+
+                    lblSyncStatus.Text = $"模板已保存到: {saveFileDialog.FileName}";
+                    lblSyncStatus.ForeColor = Color.Green;
+                    Serilog.Log.Information("联系人导入模板已保存: {Path}", saveFileDialog.FileName);
+                }
+                catch (Exception ex)
+                {
+                    lblSyncStatus.Text = $"保存模板失败: {ex.Message}";
+                    lblSyncStatus.ForeColor = Color.Red;
+                    Serilog.Log.Error(ex, "保存联系人模板失败");
+                }
+            }
+        }
+
+        private string GetCsvTemplate()
+        {
+            // 列名与 SyncContactsFromCsv 中识别的列保持一致
+            // 必填: 电子邮件地址 (Email) ;选填: 名/姓/电子邮件显示名称/电话/公司/职务
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("电子邮件地址,名,姓,电子邮件显示名称,电话,公司,职务");
+            sb.AppendLine("zhangsan@example.com,三,张,张三,13800138000,示例公司,工程师");
+            sb.AppendLine("lisi@example.com,四,李,李四,13900139000,示例公司,设计师");
+            sb.AppendLine("wangwu@example.com,五,王,王五,13700137000,示例公司,产品经理");
+            return sb.ToString();
+        }
+
+        private string GetVcfTemplate()
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("BEGIN:VCARD");
+            sb.AppendLine("VERSION:3.0");
+            sb.AppendLine("FN:张三");
+            sb.AppendLine("N:张;三;;;");
+            sb.AppendLine("EMAIL;TYPE=INTERNET:zhangsan@example.com");
+            sb.AppendLine("TEL;TYPE=CELL:13800138000");
+            sb.AppendLine("ORG:示例公司");
+            sb.AppendLine("TITLE:工程师");
+            sb.AppendLine("END:VCARD");
+            sb.AppendLine("BEGIN:VCARD");
+            sb.AppendLine("VERSION:3.0");
+            sb.AppendLine("FN:李四");
+            sb.AppendLine("N:李;四;;;");
+            sb.AppendLine("EMAIL;TYPE=INTERNET:lisi@example.com");
+            sb.AppendLine("TEL;TYPE=CELL:13900139000");
+            sb.AppendLine("ORG:示例公司");
+            sb.AppendLine("TITLE:设计师");
+            sb.AppendLine("END:VCARD");
+            return sb.ToString();
+        }
+
         private void BtnOAuthLogin_Click(object sender, EventArgs e)
         {
             if (MainForm == null)
@@ -645,6 +831,31 @@ namespace MailConverter.Services.Contacts
             // 禁用按钮
             btnStartSync.Enabled = false;
 
+            // 进度回调 - 后台线程调用,通过 Invoke 更新 UI
+            Action<int, int> progressCallback = (current, total) =>
+            {
+                this.Invoke(new Action(() =>
+                {
+                    if (total <= 0)
+                    {
+                        progressSync.Value = 0;
+                        lblProgressPercent.Text = "0%";
+                    }
+                    else
+                    {
+                        int percent = (int)((double)current / total * 100);
+                        progressSync.Value = Math.Min(percent, 100);
+                        lblProgressPercent.Text = $"{percent}% ({current}/{total})";
+                    }
+                }));
+            };
+
+            // 日志回调 - 写入主窗体底部日志窗口 (AppendLogToMainWindow 内部已处理 Invoke)
+            Action<string> logCallback = (message) =>
+            {
+                MainForm?.AppendLogToMainWindow(message);
+            };
+
             Task.Run(() =>
             {
                 try
@@ -653,7 +864,9 @@ namespace MailConverter.Services.Contacts
                     {
                         lblSyncStatus.Text = "正在同步...";
                         lblSyncStatus.ForeColor = Color.Blue;
-                        progressSync.Style = ProgressBarStyle.Marquee;
+                        progressSync.Style = ProgressBarStyle.Continuous;
+                        progressSync.Value = 0;
+                        lblProgressPercent.Text = "0%";
                     }));
 
                     string resultMessage = "";
@@ -693,7 +906,7 @@ namespace MailConverter.Services.Contacts
                                 {
                                     lblSyncStatus.Text = "正在读取CSV文件...";
                                 }));
-                                resultMessage = MainForm.SyncContactsFromCsv(filePath);
+                                resultMessage = MainForm.SyncContactsFromCsv(filePath, progressCallback, logCallback);
                             }
                             else
                             {
@@ -710,7 +923,7 @@ namespace MailConverter.Services.Contacts
                                 {
                                     if (File.Exists(f))
                                     {
-                                        var result = MainForm.SyncContactsFromVcf(f);
+                                        var result = MainForm.SyncContactsFromVcf(f, progressCallback, logCallback);
                                         var match = System.Text.RegularExpressions.Regex.Match(result, @"总计(\d+)条, 成功(\d+)条, 跳过(\d+)条, 失败(\d+)条");
                                         if (match.Success)
                                         {
@@ -725,7 +938,7 @@ namespace MailConverter.Services.Contacts
                             }
                             else
                             {
-                                resultMessage = MainForm.SyncContactsFromVcf(filePath);
+                                resultMessage = MainForm.SyncContactsFromVcf(filePath, progressCallback, logCallback);
                             }
                         }
                         else
@@ -788,6 +1001,9 @@ namespace MailConverter.Services.Contacts
                                     }));
 
                                     var svc = MainForm.Office365Service;
+                                    int totalCount = contacts.Count;
+                                    progressCallback(0, totalCount);
+                                    int processed = 0;
                                     foreach (var contact in contacts)
                                     {
                                         try
@@ -801,13 +1017,20 @@ namespace MailConverter.Services.Contacts
                                                     if (!string.IsNullOrWhiteSpace(pc.Email))
                                                     {
                                                         if (svc.CreateContact(pc.Name, pc.Email, pc.Phone, null, null))
+                                                        {
                                                             successCount++;
+                                                            logCallback($"[成功] {pc.Name} <{pc.Email}>");
+                                                        }
                                                         else
+                                                        {
                                                             errorCount++;
+                                                            logCallback($"[失败] {pc.Name} <{pc.Email}>");
+                                                        }
                                                     }
                                                     else
                                                     {
                                                         skipCount++;
+                                                        logCallback($"[跳过] 无邮箱: {pc.Name}");
                                                     }
                                                 }
                                             }
@@ -816,6 +1039,12 @@ namespace MailConverter.Services.Contacts
                                         {
                                             errorCount++;
                                             Serilog.Log.Warning("同步联系人失败: {Error}", ex.Message);
+                                            logCallback($"[异常] {ex.Message}");
+                                        }
+                                        finally
+                                        {
+                                            processed++;
+                                            progressCallback(processed, totalCount);
                                         }
                                     }
 

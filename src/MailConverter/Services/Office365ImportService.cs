@@ -1795,46 +1795,72 @@ namespace MailConverter
 
         /// <summary>
         /// 创建联系人（带扩展信息）
+        /// 使用 Graph API (OAuth token 的 aud=graph.microsoft.com，EWS 在此 token 下会"成功"
+        /// 但联系人实际未保存到 O365，必须走 Graph 路径)
         /// </summary>
         public bool CreateContact(string displayName, string emailAddress, string phone, string company, string title)
         {
-            if (_service == null)
+            if (_graphClient == null)
             {
-                Log.Error("未连接 Office 365");
+                Log.Error("Graph 客户端未初始化，请先调用 ConnectWithOAuth");
+                return false;
+            }
+            if (string.IsNullOrWhiteSpace(_email))
+            {
+                Log.Error("未设置目标邮箱 (_email 为空)");
                 return false;
             }
 
-            // 如果邮箱为空，设置为null而不是空字符串
-            if (string.IsNullOrWhiteSpace(emailAddress))
-                emailAddress = null;
-
             try
             {
-                Contact contact = new Contact(_service);
-                contact.DisplayName = displayName;
-
-                // 只有邮箱不为空时才设置
-                if (!string.IsNullOrEmpty(emailAddress))
+                var contact = new Microsoft.Graph.Models.Contact
                 {
-                    contact.EmailAddresses[EmailAddressKey.EmailAddress1] = new EmailAddress(emailAddress);
+                    DisplayName = !string.IsNullOrWhiteSpace(displayName) ? displayName : emailAddress
+                };
+
+                // 邮箱
+                if (!string.IsNullOrWhiteSpace(emailAddress))
+                {
+                    contact.EmailAddresses = new List<Microsoft.Graph.Models.EmailAddress>
+                    {
+                        new Microsoft.Graph.Models.EmailAddress
+                        {
+                            Name = !string.IsNullOrWhiteSpace(displayName) ? displayName : emailAddress,
+                            Address = emailAddress
+                        }
+                    };
                 }
 
-                // 添加扩展信息
-                if (!string.IsNullOrWhiteSpace(phone))
-                    contact.PhoneNumbers[PhoneNumberKey.PrimaryPhone] = phone;
+                // 公司/职位
                 if (!string.IsNullOrWhiteSpace(company))
                     contact.CompanyName = company;
                 if (!string.IsNullOrWhiteSpace(title))
                     contact.JobTitle = title;
 
-                contact.Save();
-                Log.Information("创建联系人成功: {Name} <{Email}>, Phone={Phone}, Company={Company}, Title={Title}",
-                    displayName, emailAddress ?? "(无邮箱)", phone, company, title);
-                return true;
+                // 电话 - 放入 BusinessPhones 列表
+                if (!string.IsNullOrWhiteSpace(phone))
+                {
+                    contact.BusinessPhones = new List<string> { phone };
+                }
+
+                // 同步调用 Graph API
+                var created = _graphClient.Users[_email].Contacts.PostAsync(contact).GetAwaiter().GetResult();
+
+                if (created != null && !string.IsNullOrEmpty(created.Id))
+                {
+                    Log.Information("创建联系人成功 (Graph): {Name} <{Email}>, Id={Id}, Phone={Phone}, Company={Company}, Title={Title}",
+                        displayName, emailAddress ?? "(无邮箱)", created.Id, phone, company, title);
+                    return true;
+                }
+                else
+                {
+                    Log.Warning("Graph 创建联系人返回空 Id: {Name} <{Email}>", displayName, emailAddress ?? "(无邮箱)");
+                    return false;
+                }
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "创建联系人失败: {Name} <{Email}>", displayName, emailAddress ?? "(无邮箱)");
+                Log.Error(ex, "创建联系人失败 (Graph): {Name} <{Email}>", displayName, emailAddress ?? "(无邮箱)");
                 return false;
             }
         }
@@ -1924,12 +1950,61 @@ namespace MailConverter
         /// </summary>
         public bool CreateCalendarEvent(string subject, DateTime start, DateTime end, string description = "", string location = "")
         {
-            if (_service == null)
+            if (_graphClient == null && _service == null)
             {
-                Log.Error("未连接 Office 365");
+                Log.Error("未连接 Office 365 (Graph 和 EWS 都未初始化)");
                 return false;
             }
 
+            // 优先走 Microsoft Graph(用户 OAuth 登录拿的 token 只声明了 Graph 范围的 scope,
+            // 用它去 EWS 会被服务端 aud 校验静默拒绝,Save() 返回无异常但实际不写入日历)。
+            // EWS 路径仅作为 Graph 不可用时的回退。
+            if (_graphClient != null)
+            {
+                try
+                {
+                    var graphEvent = new Microsoft.Graph.Models.Event
+                    {
+                        Subject = subject,
+                        Body = new Microsoft.Graph.Models.ItemBody
+                        {
+                            ContentType = Microsoft.Graph.Models.BodyType.Text,
+                            Content = description ?? ""
+                        },
+                        Start = new Microsoft.Graph.Models.DateTimeTimeZone
+                        {
+                            // start 来自 CSV 解析,Kind=Unspecified,wall-clock 即用户本地时间
+                            // 这里强制按"东八区"序列化,O365 会按用户邮箱时区显示一致
+                            DateTime = start.ToString("yyyy-MM-ddTHH:mm:ss"),
+                            TimeZone = "China Standard Time"
+                        },
+                        End = new Microsoft.Graph.Models.DateTimeTimeZone
+                        {
+                            DateTime = end.ToString("yyyy-MM-ddTHH:mm:ss"),
+                            TimeZone = "China Standard Time"
+                        },
+                        Location = string.IsNullOrEmpty(location)
+                            ? null
+                            : new Microsoft.Graph.Models.Location { DisplayName = location }
+                    };
+
+                    var created = _graphClient.Me.Events.PostAsync(graphEvent).GetAwaiter().GetResult();
+                    if (created != null && !string.IsNullOrEmpty(created.Id))
+                    {
+                        Log.Information("创建日历事件成功 (Graph): {Subject} id={Id}", subject, created.Id);
+                        return true;
+                    }
+                    Log.Warning("创建日历事件 (Graph): {Subject} 返回为空,可能未创建", subject);
+                    return false;
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "创建日历事件 (Graph) 失败: {Subject}", subject);
+                    return false;
+                }
+            }
+
+            // 回退:EWS 路径(仅在 Graph 不可用时)
             try
             {
                 Appointment appointment = new Appointment(_service);
@@ -1939,14 +2014,75 @@ namespace MailConverter
                 appointment.Body = description;
                 appointment.Location = location;
                 appointment.Save(WellKnownFolderName.Calendar);
-                Log.Information("创建日历事件成功: {Subject}", subject);
+                Log.Information("创建日历事件成功 (EWS 回退): {Subject}", subject);
                 return true;
             }
             catch (Exception ex)
             {
-                Log.Error(ex, "创建日历事件失败: {Subject}", subject);
+                Log.Error(ex, "创建日历事件 (EWS) 失败: {Subject}", subject);
                 return false;
             }
+        }
+
+        /// <summary>
+        /// 创建后立即按 Subject + Start 反查,确认事件真的写入了日历文件夹。
+        /// EWS 偶尔会出现 Save() 不抛异常但服务端丢消息的情况,加这一层能尽早暴露问题。
+        /// </summary>
+        private bool VerifyAppointmentSaved(string subject, DateTime start)
+        {
+            try
+            {
+                var calendar = Folder.Bind(_service, WellKnownFolderName.Calendar).Result;
+                Log.Debug("VerifyAppointmentSaved: 已绑定日历文件夹, TotalCount={Count}", calendar.TotalCount);
+
+                var startWindow = start.AddMinutes(-2);
+                var endWindow = start.AddMinutes(2);
+                var filter = new SearchFilter.SearchFilterCollection(LogicalOperator.And,
+                    new SearchFilter.IsEqualTo(AppointmentSchema.Subject, subject),
+                    new SearchFilter.IsGreaterThanOrEqualTo(AppointmentSchema.Start, startWindow),
+                    new SearchFilter.IsLessThanOrEqualTo(AppointmentSchema.Start, endWindow));
+                var view = new ItemView(5);
+                var result = calendar.FindItems(filter, view).Result;
+                Log.Debug("VerifyAppointmentSaved: Subject='{Subject}' 查询命中 {Count} 条", subject, result?.Count() ?? 0);
+                return result != null && result.Count() > 0;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "VerifyAppointmentSaved 查询异常: Subject='{Subject}'", subject);
+                return false; // 查询失败不阻塞主流程,按"未校验"对待
+            }
+        }
+
+        /// <summary>
+        /// 诊断:列出最近 N 个日历事件的 Subject + Start,用于排查"Save 成功但查不到"问题
+        /// </summary>
+        public List<(string Subject, DateTime Start)> ListRecentCalendarEvents(int count = 10)
+        {
+            var result = new List<(string, DateTime)>();
+            try
+            {
+                var calendar = Folder.Bind(_service, WellKnownFolderName.Calendar).Result;
+                var view = new ItemView(count);
+                view.OrderBy.Add(AppointmentSchema.Start, SortDirection.Descending);
+                var items = calendar.FindItems(view).Result;
+                foreach (var item in items)
+                {
+                    if (item is Appointment appt)
+                    {
+                        result.Add((appt.Subject ?? "(无主题)", appt.Start));
+                    }
+                }
+                Log.Information("ListRecentCalendarEvents: 日历文件夹共 {Total} 项, 最近 {Count} 条:", calendar.TotalCount, result.Count);
+                foreach (var (s, st) in result)
+                {
+                    Log.Information("  - {Start:yyyy-MM-dd HH:mm} | {Subject}", st, s);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "ListRecentCalendarEvents 失败");
+            }
+            return result;
         }
 
         /// <summary>

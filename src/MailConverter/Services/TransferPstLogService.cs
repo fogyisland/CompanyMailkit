@@ -16,7 +16,14 @@ namespace MailConverter
         // BatchSYNCtoO365 子类型
         public static string[] BatchLogTypes = new[] { "Login", "PSTMAILSYNC", "PSTSYNCContact", "PSTSYNCCalendar", "CSVSYNCContact", "VCSYNCContact", "CSVSYNCCalendar", "PurViewSYNC" };
         // SingleUserSYNCO365 子类型
-        public static string[] SingleUserLogTypes = new[] { "EMLPSTImport", "SyncContactCalendar" };
+        public static string[] SingleUserLogTypes = new[] { "EMLPSTImport", "SyncContactCalendar", "PSTImport", "synccontacts" };
+
+        // 自定义日志文件名前缀 (key=类型, value=文件名前缀)
+        public static System.Collections.Generic.Dictionary<string, string> LogFilePrefixes =
+            new System.Collections.Generic.Dictionary<string, string>
+            {
+                { "PSTImport", "Pstimport" }
+            };
         // O365Toolkit 子类型
         public static string[] O365ToolkitLogTypes = new[] { "O365Login", "O365Account", "O365Group", "O365Mobile", "O365Traffic", "O365Migration", "O365Whois", "O365Dns" };
 
@@ -56,7 +63,11 @@ namespace MailConverter
                 dir = Path.Combine(LogDir, type);
             }
             Directory.CreateDirectory(dir);
-            return Path.Combine(dir, $"{type}-{DateTime.Now:yyyy-MM-dd}.LOG");
+            string filePrefix = LogFilePrefixes.ContainsKey(type) ? LogFilePrefixes[type] : type;
+            string fileName = LogFilePrefixes.ContainsKey(type)
+                ? $"{filePrefix}_{DateTime.Now:yyyy-MM-dd}.log"
+                : $"{filePrefix}-{DateTime.Now:yyyy-MM-dd}.LOG";
+            return Path.Combine(dir, fileName);
         }
 
         /// <summary>
