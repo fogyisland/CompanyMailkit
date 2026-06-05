@@ -40,6 +40,7 @@ namespace MailConverter.Services.Contacts
         private ComboBox cmbSyncAccounts;
         private TableLayoutPanel tblSource;
         private ToolTip _wechatWorkTip;
+        private Label lblWechatHint;
 
         private List<string> _selectedContactUrls = new List<string>();
 
@@ -342,6 +343,21 @@ namespace MailConverter.Services.Contacts
             tblSource.Controls.Add(btnIncrementalSync, 1, 4);
 
             grpSource.Controls.Add(tblSource);
+
+            // 底部提示行: 仅在选择企业微信(内部/客户联系)时显示
+            lblWechatHint = new Label
+            {
+                Name = "lblWechatHint",
+                Text = "",
+                Dock = DockStyle.Bottom,
+                Height = 40,
+                ForeColor = Color.DarkSlateGray,
+                BackColor = Color.FromArgb(245, 248, 252),
+                Visible = false,
+                TextAlign = ContentAlignment.MiddleLeft,
+                Padding = new Padding(10, 0, 10, 0)
+            };
+            grpSource.Controls.Add(lblWechatHint);  // 后加, Dock=Bottom 优先占用底部空间
 
             // ========== 区块 3: 操作区 (GroupBox) ==========
             var grpAction = new GroupBox
@@ -738,6 +754,30 @@ namespace MailConverter.Services.Contacts
             if (cmbSourceType.SelectedIndex == 3 || cmbSourceType.SelectedIndex == 4)
             {
                 txtServerUrl.Text = "https://qyapi.weixin.qq.com/cgi-bin/";
+            }
+
+            // 底部提示行: 选企业微信模式时显示获取 CorpID/Secret 的指引
+            UpdateWechatHint(cmbSourceType.SelectedIndex);
+        }
+
+        private void UpdateWechatHint(int sourceType)
+        {
+            if (lblWechatHint == null) return;
+            if (sourceType == 3)
+            {
+                lblWechatHint.Text = "提示: CorpID 在 [我的企业 → 企业信息] 查看; Secret 必须是「自建应用」Secret, " +
+                                     "在 [应用管理 → 自建应用] 中获取 (通讯录同步 Secret 无权读详情)。";
+                lblWechatHint.Visible = true;
+            }
+            else if (sourceType == 4)
+            {
+                lblWechatHint.Text = "提示: CorpID 在 [我的企业 → 企业信息] 查看; Secret 必须是「客户联系」Secret, " +
+                                     "在 [客户联系 → API] 中获取 (不是自建应用 Secret)。";
+                lblWechatHint.Visible = true;
+            }
+            else
+            {
+                lblWechatHint.Visible = false;
             }
         }
 
