@@ -1177,6 +1177,11 @@ namespace MailConverter
             var preferencesItem = new ToolStripMenuItem("首选项...", null, (s, e) => { ShowSettingsDialog(); RefreshAllAccountLists(); });
             toolMenu.DropDownItems.Add(preferencesItem);
 
+            // CalDAV 同步设置 (日历同步) - 复用首选项对话框, 打开时直接跳到 CardDAV 页
+            // 注: DAV 服务器同时支持 CardDAV/CalDAV, 共用同一份账户配置, 见 SyncCalendarControl.cs:478
+            var calDavSettingsItem = new ToolStripMenuItem("CalDAV 同步设置...", null, (s, e) => { ShowSettingsDialog("CardDAV"); RefreshAllAccountLists(); });
+            toolMenu.DropDownItems.Add(calDavSettingsItem);
+
             // 添加 Service Principal 注册功能
             var servicePrincipalItem = new ToolStripMenuItem("注册 Service Principal", null, (s, e) => ShowServicePrincipalDialog());
             toolMenu.DropDownItems.Add(servicePrincipalItem);
@@ -22581,7 +22586,7 @@ $results | Out-String
             }
         }
 
-        private void ShowSettingsDialog()
+        private void ShowSettingsDialog(string initialPage = null)
         {
             var settings = ConfigService.LoadAll();
 
@@ -23069,6 +23074,12 @@ $results | Out-String
                     if (!string.IsNullOrEmpty(pageName))
                         switchPage(pageName);
                 };
+            }
+
+            // 如果指定了初始页, 切到该页 (供「CardDAV 同步设置」等快捷入口使用)
+            if (!string.IsNullOrEmpty(initialPage) && contentPages.ContainsKey(initialPage))
+            {
+                switchPage(initialPage);
             }
 
             // ========== 事件逻辑 ==========
