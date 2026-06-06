@@ -1174,14 +1174,12 @@ namespace MailConverter
             toolMenu.DropDownItems.Add(openLogItem);
             toolMenu.DropDownItems.Add(openDataFolderItem);
             toolMenu.DropDownItems.Add(new ToolStripSeparator());
-            // 首选项 - 子菜单形式, 包含完整打开 + 各分类快速入口
+            // 首选项 - 弹窗式子菜单, 暂时只放 CalDAV 设置这一项
+            // 后续可在 DropDownItems 中继续添加其他"快速弹窗"类入口
             var preferencesMenu = new ToolStripMenuItem("首选项(&P)");
-            var openAllPrefsItem = new ToolStripMenuItem("打开首选项...", null, (s, e) => { ShowSettingsDialog(); RefreshAllAccountLists(); });
-            // CalDAV 设置 (日历同步) - 复用首选项对话框, 打开时直接跳到 CardDAV 页
+            // CalDAV 设置 (日历同步) - 打开专用弹窗, 直接跳到 DAV 账户页
             // 注: DAV 服务器同时支持 CardDAV/CalDAV, 共用同一份账户配置, 见 SyncCalendarControl.cs:478
             var calDavSettingsItem = new ToolStripMenuItem("CalDAV 设置...", null, (s, e) => { ShowSettingsDialog("CardDAV"); RefreshAllAccountLists(); });
-            preferencesMenu.DropDownItems.Add(openAllPrefsItem);
-            preferencesMenu.DropDownItems.Add(new ToolStripSeparator());
             preferencesMenu.DropDownItems.Add(calDavSettingsItem);
             toolMenu.DropDownItems.Add(preferencesMenu);
 
